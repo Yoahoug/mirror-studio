@@ -1,14 +1,14 @@
 # 绘镜 Mirror Studio
 
-一个面向朋友小圈子使用的免费生图工作台：有生图资源的人可以把自己的图片模型和 LLM 渠道接入进来，给朋友开放注册、上传参考图、上传 EPUB 小说并自动分析剧情生成场景图。
+绘镜 Mirror Studio 是一个面向朋友小圈子和自托管场景的 AI 生图工作台。你可以接入自己的图片模型和 LLM 渠道，开放给朋友注册使用，支持参考图上传、文生图、图生图，以及上传 EPUB 小说后自动分析剧情并生成场景图。
 
-项目适合自托管、轻量公开仓库初始化和二次修改。默认用 Django 单体后端承载两个 React 工作台，配合 PostgreSQL、一个后台 worker 和本地文件存储即可运行。
+项目默认采用 Django 单体后端承载两个 React 工作台，配合 PostgreSQL、后台 worker 和本地文件存储即可运行。代码结构适合公开仓库初始化、私有部署和二次修改。
 
 ## 能做什么
 
 - 文生图、图生图与历史记录管理。
 - EPUB 小说上传、剧情场景分析、场景图生成。
-- 邮箱注册、验证码、登录风控与用户隔离。
+- 邮箱注册、验证码、登录风控和用户隔离。
 - 每个账号每日免费次数，后台可调整默认额度和单个用户额度。
 - 管理台维护用户、任务、系统配置、图片渠道和 LLM 渠道。
 - 大文件分片上传，适合通过反向代理或 Cloudflare Tunnel 部署。
@@ -143,8 +143,6 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
 项目里的 `docker/nginx/default.conf` 已经对 `/api/uploads/` 关闭请求缓冲，并保留 `X-Forwarded-Host` / `X-Forwarded-Proto`。如果你的 Cloudflare Tunnel 直接打到 `web:8000`，请在 tunnel 或上游代理中传递同等头部。
 
-这次修复的分片上传 CSRF 问题来自前端请求头合并顺序：分片 `PUT` 请求自定义 `Content-Type` 时覆盖了通用头，导致 `X-CSRFToken` 丢失。现在已修复为先展开请求参数，再显式合并保留 CSRF 头。
-
 ## 大文件上传
 
 默认分片配置：
@@ -167,17 +165,17 @@ proxy_request_buffering off;
 macOS / Linux：
 
 ```bash
-python -m venv .venv
+.venv/bin/python --version 2>/dev/null || python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements/dev.txt
+.venv/bin/pip install -r requirements/dev.txt
 npm install
 npm install --prefix frontend/workspace
 npm install --prefix frontend/console
 cp .env.example .env
-python manage.py migrate
-python scripts/seed_siteconfig.py
-python scripts/seed_demo_data.py
-python manage.py runserver
+.venv/bin/python manage.py migrate
+.venv/bin/python scripts/seed_siteconfig.py
+.venv/bin/python scripts/seed_demo_data.py
+.venv/bin/python manage.py runserver
 ```
 
 前端开发服务：
@@ -196,7 +194,7 @@ Windows PowerShell 可参考 `scripts/start-local.ps1` 等脚本。
 npm run build:css
 npm run build --prefix frontend/workspace
 npm run build --prefix frontend/console
-python manage.py collectstatic --noinput
+.venv/bin/python manage.py collectstatic --noinput
 ```
 
 ## 初始化数据
@@ -211,29 +209,6 @@ AUTO_COLLECTSTATIC=1
 ```
 
 其中 `AUTO_INIT_APP_DATA=1` 会创建或更新管理员账号，并根据 `PROVIDER_*` / `LLM_*` 初始化默认模型渠道。
-
-## 公开仓库建议
-
-提交前建议保留：
-
-- `.env.example`
-- `README.md`
-- `docker-compose.yml`
-- `Dockerfile`
-- `requirements/`
-- `apps/`、`config/`、`frontend/`、`templates/`、`static/`、`static_src/`
-
-不要提交：
-
-- `.env`
-- `media/`
-- `staticfiles/`
-- `node_modules/`
-- `.venv/`
-- `db.sqlite3`
-- 真实 EPUB 小说、真实 API Key、真实 SMTP 授权码
-
-`.gitignore` 已忽略 `novel/*.epub`，公开仓库可以保留 `novel/` 目录但不要放真实版权内容。
 
 ## 常用命令
 
@@ -270,6 +245,10 @@ templates/            Django 模板
 docker/               容器启动脚本和 Nginx 示例
 ```
 
-## License
+## 许可证
 
-当前仓库未声明许可证。公开前请按你的分发目标补充 `LICENSE`。
+本项目采用 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) 许可协议。
+
+简单来说：不可商用，可二改。
+
+你可以在非商业目的下学习、研究、自托管、复制、分发和二次修改本项目；分发原始版本或二次修改版本时，需要附带该许可证或许可证链接，并保留原项目来源说明。第三方依赖、模型服务和外部素材按其各自许可证或服务条款执行。
