@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}账户中心 - {{ SITE_NAME }}{% endblock %}
+
+{% block content %}
+<section class="site-shell py-10">
+  <div class="mb-6 flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-semibold text-slate-950">账户中心</h1>
+      <p class="mt-2 text-slate-600">查看剩余次数、最近订单和历史入口。</p>
+    </div>
+    <a class="btn-primary" href="/workspace">进入工作台</a>
+  </div>
+  {% include "partials/account_summary.html" %}
+</section>
+{% endblock %}
+

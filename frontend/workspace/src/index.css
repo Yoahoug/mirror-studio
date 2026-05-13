@@ -1,0 +1,115 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-brand-primary: #1a1a1a;
+  --color-brand-muted: #6b7280;
+  --color-brand-border: #e5e7eb;
+  --color-brand-bg: #f9fafb;
+}
+
+@layer base {
+  body {
+    @apply bg-brand-bg text-brand-primary font-sans antialiased;
+  }
+}
+
+/* Glassmorphism helpers */
+.glass {
+  @apply bg-white/70 backdrop-blur-xl border border-white/20;
+}
+
+/* Neumorphism subtle effect */
+.neumorph-subtle {
+  box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.02), -4px -4px 10px rgba(255, 255, 255, 0.8);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #e5e7eb;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #d1d5db;
+}
+
+/* Markdown Styles */
+.markdown-body {
+  @apply text-inherit leading-relaxed;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.markdown-body p {
+  @apply mb-4 last:mb-0;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  @apply font-bold mt-6 mb-4;
+}
+
+.markdown-body ul, .markdown-body ol {
+  @apply pl-5 mb-4;
+}
+
+.markdown-body ul {
+  @apply list-disc;
+}
+
+.markdown-body ol {
+  @apply list-decimal;
+}
+
+.markdown-body pre {
+  @apply my-4 rounded-2xl overflow-hidden;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.markdown-body code:not(pre code) {
+  @apply bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono text-black;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Message Content Container – prevents long text from overflowing */
+.msg-content {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-x: hidden;
+}
+
+.msg-content pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.msg-content img {
+  max-width: 100%;
+  height: auto;
+}
+
+.msg-content table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.msg-content blockquote {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}

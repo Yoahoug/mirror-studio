@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}充值 - {{ SITE_NAME }}{% endblock %}
+
+{% block content %}
+<section class="site-shell py-10" x-data="{ loading: false, current: null, order: null }">
+  <div class="mb-8">
+    <h1 class="text-2xl font-semibold text-slate-950">充值购买次数包</h1>
+    <p class="mt-2 text-slate-600">支付成功以异步回调为准。开发模式下可直接模拟支付成功。</p>
+  </div>
+  <div class="grid gap-6 lg:grid-cols-[1fr_360px]">
+    <div class="grid gap-4 md:grid-cols-3">
+      {% for package in packages %}
+      <button class="panel p-6 text-left transition hover:border-brand-100 hover:shadow-lg" @click="current='{{ package.package_code }}'; loading=true; fetch('/api/payments/orders', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':'{{ csrf_token }}'}, body: JSON.stringify({package_code:'{{ package.package_code }}'})}).then(r=>r.json()).then(r=>{ loading=false; order = r.data; })">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h3 class="text-lg font-semibold text-slate-950">{{ package.name }}</h3>
+            <p class="mt-2 text-sm text-slate-500">{{ package.description }}</p>
+          </div>
+          <span class="rounded-full bg-brand-50 px-3 py-1 text-xs font-medium text-brand-600">{{ package.quota_count }} 次</span>
+        </div>
+        <div class="mt-6 text-3xl font-semibold text-slate-950">¥{{ package.price_amount }}</div>
+      </button>
+      {% endfor %}
+    </div>
+    <div class="panel p-6">
+      <template x-if="!order">
+        <div class="text-sm text-slate-500">选择左侧套餐后，这里会显示二维码与订单信息。</div>
+      </template>
+      <template x-if="order">
+        <div class="space-y-4">
+          <div>
+            <p class="text-sm text-slate-500">订单号</p>
+            <p class="mt-1 font-medium text-slate-900" x-text="order.order_no"></p>
+          </div>
+          <div>
+            <p class="text-sm text-slate-500">支付金额</p>
+            <p class="mt-1 font-medium text-slate-900">¥<span x-text="order.pay_amount"></span></p>
+          </div>
+          <div>
+            <p class="text-sm text-slate-500">二维码内容</p>
+            <textarea class="mt-2 h-32 w-full rounded-xl border border-slate-200 p-3 text-xs text-slate-600" readonly x-text="order.qr_code"></textarea>
+          </div>
+          <button class="btn-primary w-full" x-show="order.mock_enabled" @click="fetch('/api/dev/payments/orders/' + order.order_no + '/mock-paid', {method:'POST', headers:{'X-CSRFToken':'{{ csrf_token }}'}}).then(r=>r.json()).then(()=>{ order.status='paid'; })">开发模式模拟支付成功</button>
+          <div class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            当前状态：<span class="font-medium text-slate-900" x-text="order.status"></span>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+</section>
+{% endblock %}

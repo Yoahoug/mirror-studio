@@ -1,0 +1,14 @@
+{
+  "name": "consumer-image-platform",
+  "private": true,
+  "scripts": {
+    "bundle:update": "python3 scripts/make_update_zip.py",
+    "build:css": "tailwindcss -i ./static_src/css/tailwind.css -o ./static/css/main.css --minify",
+    "watch:css": "tailwindcss -i ./static_src/css/tailwind.css -o ./static/css/main.css --watch"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.5.0",
+    "postcss": "^8.5.10",
+    "tailwindcss": "^3.4.17"
+  }
+}

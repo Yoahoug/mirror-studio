@@ -1,0 +1,80 @@
+name: mirror-studio
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  web:
+    build: .
+    image: mirror-studio-app
+    restart: unless-stopped
+    command: sh /app/docker/start-web.sh
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CACHE_BACKEND: django.core.cache.backends.locmem.LocMemCache
+      USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-1}
+      TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR:-0}
+      MOCK_PROVIDER_ENABLED: ${MOCK_PROVIDER_ENABLED:-0}
+      MINIO_USE_LOCAL_FS: ${MINIO_USE_LOCAL_FS:-1}
+      MINIO_LOCAL_ROOT: /app/media/minio
+      AUTO_APPLY_MIGRATIONS: ${AUTO_APPLY_MIGRATIONS:-1}
+      AUTO_SEED_SITECONFIG: ${AUTO_SEED_SITECONFIG:-1}
+      AUTO_INIT_APP_DATA: ${AUTO_INIT_APP_DATA:-0}
+      AUTO_COLLECTSTATIC: ${AUTO_COLLECTSTATIC:-1}
+      ALLOW_INSECURE_PROD: ${ALLOW_INSECURE_PROD:-0}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-1}
+      CSRF_COOKIE_SECURE: ${CSRF_COOKIE_SECURE:-1}
+      SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-1}
+      SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-31536000}
+      WORKSPACE_VITE_DEV_URL: ""
+      CONSOLE_VITE_DEV_URL: ""
+      GUNICORN_WORKER_CLASS: ${GUNICORN_WORKER_CLASS:-gthread}
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-180}
+      GUNICORN_GRACEFUL_TIMEOUT: ${GUNICORN_GRACEFUL_TIMEOUT:-30}
+      GUNICORN_KEEPALIVE: ${GUNICORN_KEEPALIVE:-10}
+    depends_on:
+      - postgres
+    volumes:
+      - media_data:/app/media
+      - static_volume:/app/staticfiles
+    ports:
+      - "${HTTP_PORT:-8000}:8000"
+
+  worker:
+    image: mirror-studio-app
+    restart: unless-stopped
+    command: sh /app/docker/start-worker.sh
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CACHE_BACKEND: django.core.cache.backends.locmem.LocMemCache
+      TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR:-0}
+      MOCK_PROVIDER_ENABLED: ${MOCK_PROVIDER_ENABLED:-0}
+      MINIO_USE_LOCAL_FS: ${MINIO_USE_LOCAL_FS:-1}
+      MINIO_LOCAL_ROOT: /app/media/minio
+      ALLOW_INSECURE_PROD: ${ALLOW_INSECURE_PROD:-0}
+      GENERATION_TASKS_RUN_INLINE: ${GENERATION_TASKS_RUN_INLINE:-0}
+      GENERATION_WORKER_POLL_SECONDS: ${GENERATION_WORKER_POLL_SECONDS:-2}
+    depends_on:
+      - postgres
+      - web
+    volumes:
+      - media_data:/app/media
+
+volumes:
+  postgres_data:
+  media_data:
+  static_volume:

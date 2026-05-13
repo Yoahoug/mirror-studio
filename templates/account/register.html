@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}注册 - {{ SITE_NAME }}{% endblock %}
+
+{% block content %}
+<section class="site-shell py-16">
+  <div class="mx-auto max-w-md panel p-8">
+    <h1 class="text-2xl font-semibold text-slate-950">注册账号</h1>
+    <p class="mt-2 text-sm text-slate-500">使用邮箱验证码完成注册，成功后会直接进入工作台。</p>
+    <form id="register-form" class="mt-6 space-y-4" method="post">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">账号</label>
+        {{ form.username }}
+        {{ form.username.errors }}
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">邮箱</label>
+        {{ form.email }}
+        {{ form.email.errors }}
+      </div>
+      {% if email_verification_enabled %}
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">邮箱验证码</label>
+        <div class="flex items-start gap-3">
+          <div class="flex-1">
+            {{ form.email_verification_code }}
+          </div>
+          <button
+            id="send-email-code"
+            class="btn-secondary min-w-[7.5rem] shrink-0 justify-center"
+            type="button"
+            data-url="/api/auth/register/email-code"
+            data-cooldown="{{ email_code_resend_seconds }}"
+          >
+            发送验证码
+          </button>
+        </div>
+        <p id="email-code-status" class="mt-2 text-sm text-slate-500"></p>
+        {{ form.email_verification_code.errors }}
+      </div>
+      {% endif %}
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">密码</label>
+        {{ form.password }}
+        {{ form.password.errors }}
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">确认密码</label>
+        {{ form.confirm_password }}
+        {{ form.confirm_password.errors }}
+      </div>
+      <button class="btn-primary w-full" type="submit">注册并进入工作台</button>
+    </form>
+  </div>
+</section>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const form = document.getElementById("register-form");
+    const emailInput = document.getElementById("id_email");
+    const sendButton = document.getElementById("send-email-code");
+    const status = document.getElementById("email-code-status");
+    const csrfInput = form?.querySelector('input[name="csrfmiddlewaretoken"]');
+    if (!form || !emailInput || !sendButton || !status || !csrfInput) {
+      return;
+    }
+
+    const defaultLabel = "发送验证码";
+    let countdownTimer = null;
+
+    const setStatus = (message, tone = "info") => {
+      const toneClass = tone === "error" ? "text-rose-600" : tone === "success" ? "text-emerald-600" : "text-slate-500";
+      status.className = `mt-2 text-sm ${toneClass}`;
+      status.textContent = message;
+    };
+
+    const resetButton = () => {
+      sendButton.disabled = false;
+      sendButton.textContent = defaultLabel;
+    };
+
+    const startCooldown = (seconds) => {
+      let remaining = seconds;
+      sendButton.disabled = true;
+      sendButton.textContent = `${remaining}s`;
+      countdownTimer = window.setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          window.clearInterval(countdownTimer);
+          countdownTimer = null;
+          resetButton();
+          return;
+        }
+        sendButton.textContent = `${remaining}s`;
+      }, 1000);
+    };
+
+    sendButton.addEventListener("click", async () => {
+      const email = emailInput.value.trim();
+      if (!email) {
+        setStatus("请先输入邮箱地址", "error");
+        emailInput.focus();
+        return;
+      }
+
+      sendButton.disabled = true;
+      sendButton.textContent = "发送中...";
+      setStatus("正在发送验证码...");
+
+      try {
+        const response = await fetch(sendButton.dataset.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": csrfInput.value,
+            "X-Requested-With": "XMLHttpRequest"
+          },
+          body: JSON.stringify({ email })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.code !== 0) {
+          throw new Error(payload.message || "发送失败，请稍后再试");
+        }
+        const expireSeconds = payload.data?.expire_seconds || 600;
+        const resendSeconds = payload.data?.resend_seconds || Number(sendButton.dataset.cooldown) || 60;
+        setStatus(`验证码已发送，请留意邮箱。${Math.ceil(expireSeconds / 60)} 分钟内有效。`, "success");
+        if (countdownTimer) {
+          window.clearInterval(countdownTimer);
+        }
+        startCooldown(resendSeconds);
+      } catch (error) {
+        resetButton();
+        setStatus(error.message || "发送失败，请稍后再试", "error");
+      }
+    });
+  });
+</script>
+{% endblock %}

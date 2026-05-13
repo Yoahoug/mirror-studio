@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-theme-mode="system">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ BRAND_NAME }} 创作台</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    {% if WORKSPACE_VITE_DEV_URL %}
+      <script type="module">
+        import RefreshRuntime from "{{ WORKSPACE_VITE_DEV_URL }}/@react-refresh";
+        RefreshRuntime.injectIntoGlobalHook(window);
+        window.$RefreshReg$ = () => {};
+        window.$RefreshSig$ = () => (type) => type;
+        window.__vite_plugin_react_preamble_installed__ = true;
+      </script>
+      <script type="module" src="{{ WORKSPACE_VITE_DEV_URL }}/@vite/client"></script>
+      <script type="module" src="{{ WORKSPACE_VITE_DEV_URL }}/src/main.tsx"></script>
+    {% else %}
+      <link rel="stylesheet" href="/static/workspace/assets/workspace.css?v={{ WORKSPACE_ASSET_VERSION }}">
+      <script type="module" src="/static/workspace/assets/workspace.js?v={{ WORKSPACE_ASSET_VERSION }}"></script>
+    {% endif %}
+  </head>
+  <body>
+    <div
+      id="workspace-root"
+      data-user="{% if request.user.is_authenticated %}{{ request.user.username }}{% endif %}"
+      data-brand="{{ BRAND_NAME }}"
+      data-csrf="{{ csrf_token }}"
+      data-authenticated="{% if IS_AUTHENTICATED %}1{% else %}0{% endif %}"
+      data-captcha="{{ CAPTCHA_CODE }}"
+      data-captcha-svg="{{ CAPTCHA_SVG }}"
+    ></div>
+    <script id="workspace-release-data" type="application/json">{{ WORKSPACE_RELEASE_JSON|safe }}</script>
+  </body>
+</html>

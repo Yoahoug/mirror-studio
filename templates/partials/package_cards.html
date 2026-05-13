@@ -1,0 +1,38 @@
+{% for package in packages %}
+<div class="price-card {% if forloop.counter == 2 %}price-card--featured{% endif %}">
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <p class="text-xs font-semibold uppercase tracking-[0.22em] {% if forloop.counter == 2 %}text-white/60{% else %}text-slate-400{% endif %}">
+        {% if forloop.counter == 1 %}入门体验{% elif forloop.counter == 2 %}推荐选择{% else %}高频创作{% endif %}
+      </p>
+      <h3 class="mt-3 font-display text-3xl font-bold {% if forloop.counter == 2 %}text-white{% else %}text-slate-950{% endif %}">{{ package.name }}</h3>
+      <p class="mt-3 text-sm leading-7 {% if forloop.counter == 2 %}text-white/[0.72]{% else %}text-slate-500{% endif %}">{{ package.description }}</p>
+    </div>
+    <span class="rounded-full {% if forloop.counter == 2 %}bg-white/10 text-white{% else %}bg-brand-50 text-brand-600{% endif %} px-3 py-1 text-xs font-semibold">{{ package.quota_count }} 次</span>
+  </div>
+  <div class="mt-8 flex items-end gap-2">
+    <span class="font-display text-5xl font-bold {% if forloop.counter == 2 %}text-white{% else %}text-slate-950{% endif %}">¥{{ package.price_amount }}</span>
+    <span class="pb-2 text-sm {% if forloop.counter == 2 %}text-white/[0.72]{% else %}text-slate-500{% endif %}">/ {{ package.quota_count }} 次灵感额度</span>
+    {% if package.original_price_amount and package.original_price_amount != package.price_amount %}
+    <span class="pb-2 text-sm {% if forloop.counter == 2 %}text-white/[0.48]{% else %}text-slate-400{% endif %} line-through">¥{{ package.original_price_amount }}</span>
+    {% endif %}
+  </div>
+  <div class="mt-6 rounded-[22px] {% if forloop.counter == 2 %}bg-white/[0.08]{% else %}bg-slate-50{% endif %} p-4">
+    <div class="flex items-center justify-between text-sm {% if forloop.counter == 2 %}text-white/[0.72]{% else %}text-slate-500{% endif %}">
+      <span>结算规则</span>
+      <span>成功才正式扣次</span>
+    </div>
+    <div class="mt-2 flex items-center justify-between text-sm {% if forloop.counter == 2 %}text-white/[0.72]{% else %}text-slate-500{% endif %}">
+      <span>历史保留</span>
+      <span>默认 30 天</span>
+    </div>
+  </div>
+  <div class="mt-6">
+    {% if request.user.is_authenticated %}
+      <a class="{% if forloop.counter == 2 %}btn-secondary border-white/15 bg-white text-slate-950 hover:bg-white/90{% else %}btn-primary{% endif %} w-full" href="/recharge">立即购买</a>
+    {% else %}
+      <a class="{% if forloop.counter == 2 %}btn-secondary border-white/15 bg-white text-slate-950 hover:bg-white/90{% else %}btn-primary{% endif %} w-full" href="/workspace?auth=register">注册后购买</a>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}

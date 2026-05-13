@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}套餐价格 - {{ BRAND_NAME }}{% endblock %}
+
+{% block content %}
+<section class="site-shell pb-12 pt-10 lg:pt-14">
+  <div class="feature-card-dark overflow-hidden">
+    <div class="grid gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-end">
+      <div>
+        <span class="section-kicker border-white/10 bg-white/[0.08] text-white/[0.72] shadow-none">次数套餐</span>
+        <h1 class="mt-6 font-display text-4xl font-bold tracking-tight text-white sm:text-5xl">按次购买，规则简单，花费始终看得见</h1>
+        <p class="mt-5 max-w-2xl text-base leading-8 text-white/[0.72]">没有余额钱包，没有复杂扣费。支付成功后次数直接到账，任务提交先冻结，成功再扣减，失败会自动退回。</p>
+      </div>
+      <div class="grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
+        <div class="rounded-[22px] border border-white/10 bg-white/[0.06] p-4">
+          <p class="text-sm text-white/60">到账方式</p>
+          <p class="mt-2 text-xl font-semibold text-white">支付成功即发放</p>
+        </div>
+        <div class="rounded-[22px] border border-white/10 bg-white/[0.06] p-4">
+          <p class="text-sm text-white/60">扣费方式</p>
+          <p class="mt-2 text-xl font-semibold text-white">成功后再正式扣次</p>
+        </div>
+        <div class="rounded-[22px] border border-white/10 bg-white/[0.06] p-4">
+          <p class="text-sm text-white/60">失败补偿</p>
+          <p class="mt-2 text-xl font-semibold text-white">自动返还冻结次数</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="site-shell pb-16">
+  <div class="grid gap-6 md:grid-cols-3" hx-get="/api/packages/fragment" hx-trigger="load">
+    <div class="price-card p-6">正在加载套餐...</div>
+  </div>
+</section>
+
+<section class="site-shell pb-10">
+  <div class="grid gap-4 md:grid-cols-3">
+    <div class="metric-card">
+      <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">适合尝试</p>
+      <p class="mt-3 font-display text-xl font-bold text-slate-950">先用小套餐找感觉</p>
+      <p class="mt-2 text-sm leading-7 text-slate-500">适合第一次体验风格、构图和提示词表达。</p>
+    </div>
+    <div class="metric-card">
+      <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">适合常用</p>
+      <p class="mt-3 font-display text-xl font-bold text-slate-950">中档套餐更适合长期创作</p>
+      <p class="mt-2 text-sm leading-7 text-slate-500">既能持续试错，也不会造成一次性投入太高。</p>
+    </div>
+    <div class="metric-card">
+      <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">适合囤图</p>
+      <p class="mt-3 font-display text-xl font-bold text-slate-950">重度使用者直接拿大包</p>
+      <p class="mt-2 text-sm leading-7 text-slate-500">更适合需要反复生成、沉淀素材库的场景。</p>
+    </div>
+  </div>
+</section>
+{% endblock %}
