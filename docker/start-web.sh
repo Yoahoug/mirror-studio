@@ -21,9 +21,11 @@ fi
 
 exec gunicorn config.wsgi:application \
   --bind 0.0.0.0:8000 \
-  --workers "${GUNICORN_WORKERS:-2}" \
+  --workers "${GUNICORN_WORKERS:-1}" \
   --worker-class "${GUNICORN_WORKER_CLASS:-gthread}" \
   --threads "${GUNICORN_THREADS:-4}" \
   --timeout "${GUNICORN_TIMEOUT:-180}" \
   --graceful-timeout "${GUNICORN_GRACEFUL_TIMEOUT:-30}" \
-  --keep-alive "${GUNICORN_KEEPALIVE:-10}"
+  --keep-alive "${GUNICORN_KEEPALIVE:-10}" \
+  --max-requests "${GUNICORN_MAX_REQUESTS:-800}" \
+  --max-requests-jitter "${GUNICORN_MAX_REQUESTS_JITTER:-80}"

@@ -9,11 +9,14 @@ from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.validators import URLValidator
 from django.db import transaction
 from django.http import HttpRequest
+from django.middleware.csrf import get_token
 from django.shortcuts import redirect
 from django.urls import reverse_lazy
 from django.utils import timezone
+from django.utils.decorators import method_decorator
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.generic import FormView, TemplateView
 
 from apps.audit.services import log_callback_event
@@ -413,11 +416,18 @@ class RegisterEmailCodeAPIView(View):
 
 
 class LoginCaptchaAPIView(View):
+    @method_decorator(ensure_csrf_cookie)
     def get(self, request: HttpRequest):
         if not settings.LOGIN_CAPTCHA_ENABLED:
             return api_success({"captcha_code": "", "captcha_svg": ""})
         code, svg = _issue_captcha(request)
         return api_success({"captcha_code": code, "captcha_svg": svg})
+
+
+class CsrfAPIView(View):
+    @method_decorator(ensure_csrf_cookie)
+    def get(self, request: HttpRequest):
+        return api_success({"csrf_token": get_token(request)})
 
 
 class LoginAPIView(View):

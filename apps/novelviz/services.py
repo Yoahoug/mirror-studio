@@ -533,21 +533,38 @@ def reset_task_for_retry(task_id: int, user) -> NovelVisualizationTask:
         if task.status not in {NovelVisualizationTask.Status.FAILED, NovelVisualizationTask.Status.CANCELED}:
             raise NovelVisualizationError("只有失败或已取消的小说可视化任务可以重试")
 
-        resolve_task_book_path(task)
-        resolve_scene_llm_config(task.llm_channel_code)
         if not settings.NOVELVIZ_IMAGE_API_KEY:
             raise NovelVisualizationError("未配置小说生图模型 Key")
 
-        NovelSceneImage.objects.filter(task=task).delete()
+        has_scene_plan = bool(task.scenes_json) and task.images.exists()
+        if has_scene_plan:
+            NovelSceneImage.objects.filter(task=task).exclude(status=NovelSceneImage.Status.SUCCEEDED).update(
+                status=NovelSceneImage.Status.PENDING,
+                error_message="",
+                image_path="",
+                image_url="",
+                attempts=0,
+                finished_at=None,
+                updated_at=timezone.now(),
+            )
+            progress_percent = 36
+            logs = list(task.logs or [])[-30:]
+        else:
+            resolve_task_book_path(task)
+            resolve_scene_llm_config(task.llm_channel_code)
+            NovelSceneImage.objects.filter(task=task).delete()
+            task.scenes_json = []
+            progress_percent = 1
+            logs = []
+
         task.status = NovelVisualizationTask.Status.QUEUED
-        task.progress_percent = 1
-        task.logs = []
-        task.scenes_json = []
+        task.progress_percent = progress_percent
+        task.logs = logs
         task.error_message = ""
         # Keep scene_mode and target_plot unchanged so retry repeats the same user intent.
         task.started_at = None
         task.finished_at = None
-        task.last_event_id = 0
+        task.last_event_id = max((int(item.get("id") or 0) for item in logs), default=0)
         task.save(
             update_fields=[
                 "status",
@@ -562,6 +579,58 @@ def reset_task_for_retry(task_id: int, user) -> NovelVisualizationTask:
             ]
         )
     return NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id)
+
+
+def _scene_from_plan(scene: dict[str, Any], index: int) -> dict[str, str]:
+    return {
+        "title": str(scene.get("title") or f"场景 {index}")[:160],
+        "chapter": str(scene.get("chapter") or "")[:160],
+        "story_significance": str(scene.get("story_significance") or ""),
+        "excerpt": str(scene.get("excerpt") or ""),
+        "visual_prompt": str(scene.get("visual_prompt") or ""),
+    }
+
+
+def _prepare_existing_scene_retry(task: NovelVisualizationTask) -> bool:
+    scenes = list(task.scenes_json or [])
+    if not scenes:
+        return False
+
+    existing = {image.scene_number: image for image in task.images.all()}
+    for index, scene in enumerate(scenes, start=1):
+        if index in existing:
+            continue
+        scene_payload = _scene_from_plan(scene, index)
+        NovelSceneImage.objects.create(task=task, scene_number=index, **scene_payload)
+
+    return NovelSceneImage.objects.filter(
+        task=task,
+        status__in=[
+            NovelSceneImage.Status.PENDING,
+            NovelSceneImage.Status.RUNNING,
+            NovelSceneImage.Status.FAILED,
+        ],
+    ).exists()
+
+
+def _run_image_only_retry(task_id: int, task: NovelVisualizationTask) -> bool:
+    if not _prepare_existing_scene_retry(task):
+        return False
+
+    task.progress_percent = max(task.progress_percent, 36)
+    task.save(update_fields=["progress_percent", "updated_at"])
+    append_task_event(
+        task_id,
+        "scene_plan_ready",
+        {
+            "message": "已保留上次分析结果，开始重新生成失败图片",
+            "progress_percent": 36,
+            "scenes": task.scenes_json or [],
+            "task": serialize_task(NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id), include_logs=False),
+        },
+    )
+    asyncio.run(_generate_scene_images(task_id))
+    return True
 
 
 def _task_is_stalled(task: NovelVisualizationTask) -> bool:
@@ -653,7 +722,18 @@ def _get_scene_for_generation(scene_id: int) -> NovelSceneImage:
 
 
 def _get_scene_ids(task_id: int) -> list[int]:
-    return list(NovelSceneImage.objects.filter(task_id=task_id).order_by("scene_number").values_list("id", flat=True))
+    return list(
+        NovelSceneImage.objects.filter(
+            task_id=task_id,
+            status__in=[
+                NovelSceneImage.Status.PENDING,
+                NovelSceneImage.Status.RUNNING,
+                NovelSceneImage.Status.FAILED,
+            ],
+        )
+        .order_by("scene_number")
+        .values_list("id", flat=True)
+    )
 
 
 def _mark_scene_running(scene_id: int, attempt: int) -> dict[str, Any]:
@@ -809,8 +889,7 @@ def _set_task_status(task_id: int, status: str, *, progress_percent: int | None 
     task.status = status
     if progress_percent is not None:
         task.progress_percent = progress_percent
-    if error_message:
-        task.error_message = error_message[:255]
+    task.error_message = (error_message or "")[:255]
     if status == NovelVisualizationTask.Status.RUNNING:
         task.started_at = task.started_at or timezone.now()
     if status in {NovelVisualizationTask.Status.SUCCEEDED, NovelVisualizationTask.Status.FAILED, NovelVisualizationTask.Status.CANCELED}:
@@ -832,48 +911,49 @@ def run_novel_visualization_task(task_id: int) -> None:
                 "progress_percent": 3,
             },
         )
-        task_log(task_id, f"正在读取 EPUB：{task.book_filename}", 8)
-        book_path = resolve_task_book_path(task)
-        novel_text = extract_epub_text(book_path)
-        llm_config = resolve_scene_llm_config(task.llm_channel_code)
-        analysis_message = (
-            f"正文提取完成，共 {len(novel_text):,} 字，开始使用 {llm_config.source_name} 分析指定剧情"
-            if is_targeted
-            else f"正文提取完成，共 {len(novel_text):,} 字，开始使用 {llm_config.source_name} 深度分析"
-        )
-        task_log(task_id, analysis_message, 18, text_length=len(novel_text), scene_mode=task.scene_mode)
-        scenes = request_scene_plan(
-            novel_text,
-            task.llm_channel_code,
-            target_plot=task.target_plot if is_targeted else "",
-        )
-        with transaction.atomic():
-            task = NovelVisualizationTask.objects.select_for_update().get(pk=task_id)
-            task.scenes_json = scenes
-            task.progress_percent = 36
-            task.save(update_fields=["scenes_json", "progress_percent", "updated_at"])
-            NovelSceneImage.objects.filter(task=task).delete()
-            for index, scene in enumerate(scenes, start=1):
-                NovelSceneImage.objects.create(
-                    task=task,
-                    scene_number=index,
-                    title=scene["title"],
-                    chapter=scene["chapter"],
-                    story_significance=scene["story_significance"],
-                    excerpt=scene["excerpt"],
-                    visual_prompt=scene["visual_prompt"],
-                )
-        append_task_event(
-            task_id,
-            "scene_plan_ready",
-            {
-                "message": "已定位指定剧情镜头，开始生成单张图片" if is_targeted else f"已挑选 {len(scenes)} 个震撼场景，开始并发生成图片",
-                "progress_percent": 36,
-                "scenes": scenes,
-                "task": serialize_task(NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id), include_logs=False),
-            },
-        )
-        asyncio.run(_generate_scene_images(task_id))
+        if not _run_image_only_retry(task_id, task):
+            task_log(task_id, f"正在读取 EPUB：{task.book_filename}", 8)
+            book_path = resolve_task_book_path(task)
+            novel_text = extract_epub_text(book_path)
+            llm_config = resolve_scene_llm_config(task.llm_channel_code)
+            analysis_message = (
+                f"正文提取完成，共 {len(novel_text):,} 字，开始使用 {llm_config.source_name} 分析指定剧情"
+                if is_targeted
+                else f"正文提取完成，共 {len(novel_text):,} 字，开始使用 {llm_config.source_name} 深度分析"
+            )
+            task_log(task_id, analysis_message, 18, text_length=len(novel_text), scene_mode=task.scene_mode)
+            scenes = request_scene_plan(
+                novel_text,
+                task.llm_channel_code,
+                target_plot=task.target_plot if is_targeted else "",
+            )
+            with transaction.atomic():
+                task = NovelVisualizationTask.objects.select_for_update().get(pk=task_id)
+                task.scenes_json = scenes
+                task.progress_percent = 36
+                task.save(update_fields=["scenes_json", "progress_percent", "updated_at"])
+                NovelSceneImage.objects.filter(task=task).delete()
+                for index, scene in enumerate(scenes, start=1):
+                    NovelSceneImage.objects.create(
+                        task=task,
+                        scene_number=index,
+                        title=scene["title"],
+                        chapter=scene["chapter"],
+                        story_significance=scene["story_significance"],
+                        excerpt=scene["excerpt"],
+                        visual_prompt=scene["visual_prompt"],
+                    )
+            append_task_event(
+                task_id,
+                "scene_plan_ready",
+                {
+                    "message": "已定位指定剧情镜头，开始生成单张图片" if is_targeted else f"已挑选 {len(scenes)} 个震撼场景，开始并发生成图片",
+                    "progress_percent": 36,
+                    "scenes": scenes,
+                    "task": serialize_task(NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id), include_logs=False),
+                },
+            )
+            asyncio.run(_generate_scene_images(task_id))
         task = NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id)
         succeeded = task.images.filter(status=NovelSceneImage.Status.SUCCEEDED).count()
         failed = task.images.filter(status=NovelSceneImage.Status.FAILED).count()

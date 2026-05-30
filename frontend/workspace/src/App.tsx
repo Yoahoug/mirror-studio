@@ -13,7 +13,6 @@ import { ToastContainer, ToastType } from "./components/Toast";
 import { Language, translations } from "./i18n";
 
 const RELEASE_DISMISS_PREFIX = "mirror.release.dismissed:";
-const WORKSPACE_ACTIVE_TAB_KEY = "mirror.workspace.activeTab";
 const WORKSPACE_TABS = new Set(["create", "novelviz", "history"]);
 
 function readReleaseInfo(): ReleaseInfo | null {
@@ -40,10 +39,7 @@ function readReleaseInfo(): ReleaseInfo | null {
 }
 
 export default function App() {
-  const [activeTab, setActiveTabState] = useState(() => {
-    const savedTab = window.localStorage.getItem(WORKSPACE_ACTIVE_TAB_KEY) || "";
-    return WORKSPACE_TABS.has(savedTab) ? savedTab : "create";
-  });
+  const [activeTab, setActiveTabState] = useState("create");
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabId>("profile");
@@ -55,6 +51,7 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: string, message: string, type: ToastType }[]>([]);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [selectedTaskNo, setSelectedTaskNo] = useState("");
+  const [selectedNovelTaskId, setSelectedNovelTaskId] = useState<number | null>(null);
   const [workbenchResetSignal, setWorkbenchResetSignal] = useState(0);
   const [novelvizResetSignal, setNovelvizResetSignal] = useState(0);
   const [releaseInfo] = useState<ReleaseInfo | null>(() => readReleaseInfo());
@@ -76,12 +73,25 @@ export default function App() {
   const setActiveTab = (tab: string) => {
     const nextTab = WORKSPACE_TABS.has(tab) ? tab : "create";
     setActiveTabState(nextTab);
-    window.localStorage.setItem(WORKSPACE_ACTIVE_TAB_KEY, nextTab);
   };
 
   const openNovelVisualization = () => {
+    setSelectedNovelTaskId(null);
     setActiveTab("novelviz");
     setNovelvizResetSignal((value) => value + 1);
+  };
+
+  const openHistoryTask = (taskNo: string) => {
+    if (taskNo.startsWith("novelviz:")) {
+      const taskId = Number(taskNo.replace("novelviz:", ""));
+      if (Number.isFinite(taskId) && taskId > 0) {
+        setSelectedNovelTaskId(taskId);
+        setActiveTab("novelviz");
+        return;
+      }
+    }
+    setSelectedTaskNo(taskNo);
+    setActiveTab("create");
   };
 
   const applyAccountSummary = (summary: AccountSummaryResponse) => {
@@ -247,10 +257,7 @@ export default function App() {
             isAuthenticated={isAuthenticated}
             onOpenAuth={openAuth}
             onOpenHistory={() => setActiveTab("history")}
-            onOpenTask={(taskNo) => {
-              setSelectedTaskNo(taskNo);
-              setActiveTab("create");
-            }}
+            onOpenTask={openHistoryTask}
           />
         </header>
 
@@ -263,10 +270,7 @@ export default function App() {
                 key="history"
                 addToast={addToast}
                 t={t.history}
-                onOpenTask={(taskNo) => {
-                  setSelectedTaskNo(taskNo);
-                  setActiveTab("create");
-                }}
+                onOpenTask={openHistoryTask}
               />
             ) : activeTab === 'novelviz' ? (
               <NovelVisualizationSpace
@@ -275,6 +279,7 @@ export default function App() {
                 selectedModel={selectedModel}
                 chatModels={chatModels}
                 resetSignal={novelvizResetSignal}
+                selectedTaskId={selectedNovelTaskId}
                 onOpenAuth={openAuth}
                 addToast={addToast}
               />
@@ -297,8 +302,8 @@ export default function App() {
 
       <AnimatePresence>
         {showSettings && (
-          <SettingsModal 
-            onClose={() => setShowSettings(false)} 
+          <SettingsModal
+            onClose={() => setShowSettings(false)}
             initialTab={settingsInitialTab}
             t={t.settings}
           />

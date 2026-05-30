@@ -245,6 +245,10 @@ templates/            Django 模板
 docker/               容器启动脚本和 Nginx 示例
 ```
 
+## 友情链接
+
+- [LINUX DO](https://linux.do/)：一个开放活跃的社区。
+
 ## 许可证
 
 本项目采用 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) 许可协议。

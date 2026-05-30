@@ -372,9 +372,10 @@ export default function HistorySpace({
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const loadTasks = async (page = 1) => {
-    if (page === 1) setLoading(true);
-    else setLoadingMore(true);
+  const loadTasks = async (page = 1, options: { silent?: boolean } = {}) => {
+    const silent = Boolean(options.silent);
+    if (page === 1 && !silent) setLoading(true);
+    else if (page > 1) setLoadingMore(true);
     try {
       const result = await fetchTasks({ page, pageSize: 18, query: debouncedQuery });
       setTasks((current) => page === 1 ? result.items : [...current, ...result.items]);
@@ -383,8 +384,8 @@ export default function HistorySpace({
       if (error instanceof AuthRequiredError) return;
       addToast?.(error.message || "历史记录加载失败", "error");
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (page === 1 && !silent) setLoading(false);
+      if (page > 1) setLoadingMore(false);
     }
   };
 
@@ -417,23 +418,23 @@ export default function HistorySpace({
       }));
 
       if (!matchedTask || detail.hasImage || ["failed", "canceled", "succeeded"].includes(detail.status || "")) {
-        loadTasks(1);
+        loadTasks(1, { silent: tasks.length > 0 });
       }
     };
 
     window.addEventListener("mirror:task-updated", handleTaskUpdated);
     return () => window.removeEventListener("mirror:task-updated", handleTaskUpdated);
-  }, [debouncedQuery]);
+  }, [debouncedQuery, tasks.length]);
 
   useEffect(() => {
     if (!tasks.some((task) => isActiveStatus(task.status))) return;
 
     const timer = window.setInterval(() => {
-      loadTasks(1);
+      loadTasks(1, { silent: true });
     }, 4000);
 
     return () => window.clearInterval(timer);
-  }, [debouncedQuery, tasks]);
+  }, [debouncedQuery, tasks.some((task) => isActiveStatus(task.status))]);
 
   const filteredTasks = useMemo(() => {
     if (selectedStatus === "all") return tasks;
@@ -681,7 +682,7 @@ export default function HistorySpace({
                       initial={{ opacity: 0, y: 16 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: Math.min(index, 12) * 0.025 }}
-                      onClick={() => isNovelTask(task) ? setGallery(task) : onOpenTask?.(task.task_no)}
+                      onClick={() => onOpenTask?.(task.task_no)}
                       className="group cursor-pointer overflow-hidden rounded-[1.75rem] border border-gray-100 bg-white shadow-sm transition hover:-translate-y-1 hover:border-gray-200 hover:shadow-xl hover:shadow-black/5"
                     >
                       <div className="relative aspect-[4/3] bg-gray-50">
@@ -717,7 +718,7 @@ export default function HistorySpace({
                               type="button"
                               onClick={(event) => openPreview(event, task)}
                               className="grid h-9 w-9 place-items-center rounded-full bg-white/90 text-gray-600 shadow-sm backdrop-blur transition hover:text-black"
-                              aria-label="预览图片"
+                              aria-label={isNovelTask(task) ? "打开小说图集" : "预览图片"}
                             >
                               {isNovelTask(task) ? <Images className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                             </button>
@@ -748,7 +749,7 @@ export default function HistorySpace({
                           </div>
                           {isNovelTask(task) && (
                             <div className="mt-2 inline-flex rounded-full bg-[#6d5dfc]/10 px-2.5 py-1 text-[11px] font-black text-[#6d5dfc]">
-                              小说可视化 · 图集
+                              小说可视化 · 工作台
                             </div>
                           )}
                         </div>

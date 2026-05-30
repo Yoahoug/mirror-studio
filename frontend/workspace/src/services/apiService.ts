@@ -120,6 +120,11 @@ interface UploadFileResumableOptions {
   onProgress?: (progress: UploadProgress) => void;
 }
 
+const UPLOAD_MAX_ATTEMPTS = 8;
+const UPLOAD_REQUEST_TIMEOUT_MS = 90000;
+const UPLOAD_RETRYABLE_STATUS_RE = /Request failed:\s*(408|409|425|429|500|502|503|504|520|522|523|524)/i;
+const CSRF_FAILURE_RE = /csrf|CSRF|CSRF验证失败|CSRF 验证失败|403/i;
+
 // ── Helpers ──
 
 function getCsrfToken(): string {
@@ -136,6 +141,11 @@ function getBaseHeaders(): Record<string, string> {
   };
 }
 
+function setDomCsrfToken(token: string) {
+  const el = document.getElementById("workspace-root");
+  if (el && token) el.dataset.csrf = token;
+}
+
 interface ApiResponse<T> {
   code: number;
   message: string;
@@ -149,9 +159,45 @@ export class AuthRequiredError extends Error {
   }
 }
 
+class CsrfRequiredError extends Error {
+  constructor(message = "CSRF 验证失败，请刷新后重试") {
+    super(message);
+    this.name = "CsrfRequiredError";
+  }
+}
+
+function isCsrfFailure(status: number, contentType: string, bodyText: string) {
+  return status === 403 && !contentType.includes("application/json") && CSRF_FAILURE_RE.test(bodyText);
+}
+
+export async function refreshCsrfToken(): Promise<string> {
+  const res = await fetch("/api/auth/csrf", {
+    method: "GET",
+    credentials: "same-origin",
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+    },
+  });
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error("CSRF token refresh failed");
+  }
+  const body: ApiResponse<{ csrf_token: string }> = await res.json().catch(() => ({
+    code: -1,
+    message: "Invalid response",
+    data: { csrf_token: "" },
+  }));
+  if (!res.ok || body.code !== 0 || !body.data?.csrf_token) {
+    throw new Error(body.message || "CSRF token refresh failed");
+  }
+  setDomCsrfToken(body.data.csrf_token);
+  return body.data.csrf_token;
+}
+
 async function apiRequest<T>(
   url: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  csrfRetry = true,
 ): Promise<T> {
   const headers = {
     ...getBaseHeaders(),
@@ -172,6 +218,14 @@ async function apiRequest<T>(
 
   const contentType = res.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
+    const bodyText = await res.text().catch(() => "");
+    if (csrfRetry && isCsrfFailure(res.status, contentType, bodyText)) {
+      await refreshCsrfToken();
+      return apiRequest<T>(url, options, false);
+    }
+    if (isCsrfFailure(res.status, contentType, bodyText)) {
+      throw new CsrfRequiredError();
+    }
     throw new Error(res.ok ? "Invalid response" : `Request failed: ${res.status}`);
   }
 
@@ -427,10 +481,11 @@ export async function createOrResumeUploadSession(payload: {
   content_type: string;
   total_size: number;
   client_upload_id: string;
-}): Promise<UploadSession> {
+}, signal?: AbortSignal): Promise<UploadSession> {
   return apiRequest<UploadSession>("/api/uploads/sessions", {
     method: "POST",
     body: JSON.stringify(payload),
+    signal,
   });
 }
 
@@ -438,19 +493,155 @@ export async function fetchUploadSession(uploadId: string): Promise<UploadSessio
   return apiRequest<UploadSession>(`/api/uploads/sessions/${uploadId}`);
 }
 
-export async function uploadSessionChunk(uploadId: string, index: number, chunk: Blob): Promise<UploadSession> {
+async function parseApiResponse<T>(res: Response, csrfRetry: () => Promise<T>): Promise<T> {
+  const redirectedUrl = res.redirected ? new URL(res.url, window.location.origin) : null;
+  const redirectedPath = redirectedUrl?.pathname || "";
+  const redirectedAuth = redirectedUrl?.searchParams.get("auth") || "";
+  if (res.status === 401 || redirectedPath === "/workspace" || redirectedAuth === "login") {
+    throw new AuthRequiredError();
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const bodyText = await res.text().catch(() => "");
+    if (isCsrfFailure(res.status, contentType, bodyText)) {
+      return csrfRetry();
+    }
+    throw new Error(res.ok ? "Invalid response" : `Request failed: ${res.status}`);
+  }
+
+  const body: ApiResponse<T> = await res.json().catch(() => ({ code: -1, message: "Invalid response", data: null as any }));
+  if (!res.ok || body.code !== 0) {
+    if (res.status === 401 || body.code === 401001) {
+      throw new AuthRequiredError(body.message || "请先登录或注册");
+    }
+    throw new Error(body.message || `Request failed: ${res.status}`);
+  }
+  return body.data;
+}
+
+function uploadSessionChunkWithProgress(
+  uploadId: string,
+  index: number,
+  chunk: Blob,
+  options: {
+    signal?: AbortSignal;
+    onUploadProgress?: (loaded: number) => void;
+    csrfRetry?: boolean;
+  } = {},
+): Promise<UploadSession> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    let abortHandler: (() => void) | null = null;
+    const cleanup = () => {
+      if (abortHandler) options.signal?.removeEventListener("abort", abortHandler);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    xhr.open("PUT", `/api/uploads/sessions/${uploadId}/chunks/${index}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-CSRFToken", getCsrfToken());
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        options.onUploadProgress?.(Math.min(event.loaded, chunk.size));
+      }
+    };
+    xhr.onerror = () => fail(new Error("Failed to fetch"));
+    xhr.ontimeout = () => fail(new Error("上传等待时间较长，请保持页面打开"));
+    xhr.onabort = () => fail(new DOMException("Upload canceled", "AbortError"));
+    xhr.onload = () => {
+      void parseApiResponse<UploadSession>(
+        {
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          redirected: Boolean(xhr.responseURL && xhr.responseURL !== new URL(`/api/uploads/sessions/${uploadId}/chunks/${index}`, window.location.origin).href),
+          url: xhr.responseURL || "",
+          headers: new Headers({ "content-type": xhr.getResponseHeader("content-type") || "" }),
+          json: async () => JSON.parse(xhr.responseText || "{}"),
+          text: async () => xhr.responseText || "",
+        } as Response,
+        async () => {
+          if (options.csrfRetry === false) throw new CsrfRequiredError();
+          await refreshCsrfToken();
+          return uploadSessionChunkWithProgress(uploadId, index, chunk, { ...options, csrfRetry: false });
+        },
+      )
+        .then((data) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(data);
+        })
+        .catch(fail);
+    };
+    abortHandler = () => xhr.abort();
+    if (options.signal?.aborted) {
+      xhr.abort();
+      return;
+    }
+    options.signal?.addEventListener("abort", abortHandler, { once: true });
+    xhr.send(chunk);
+  });
+}
+
+function mergeAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const activeSignals = signals.filter(Boolean) as AbortSignal[];
+  if (!activeSignals.length) return undefined;
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  activeSignals.forEach((signal) => {
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  return controller.signal;
+}
+
+async function withRequestTimeout<T>(
+  request: (signal?: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = UPLOAD_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await request(mergeAbortSignals([signal, controller.signal]));
+  } catch (error) {
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new Error("上传等待时间较长，请保持页面打开");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export async function uploadSessionChunk(uploadId: string, index: number, chunk: Blob, signal?: AbortSignal): Promise<UploadSession> {
   return apiRequest<UploadSession>(`/api/uploads/sessions/${uploadId}/chunks/${index}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/octet-stream",
     },
     body: chunk,
+    signal,
   });
 }
 
-export async function completeUploadSession(uploadId: string): Promise<UploadSession> {
+export async function completeUploadSession(uploadId: string, signal?: AbortSignal): Promise<UploadSession> {
   return apiRequest<UploadSession>(`/api/uploads/sessions/${uploadId}/complete`, {
     method: "POST",
+    signal,
   });
 }
 
@@ -470,23 +661,105 @@ function buildClientUploadId(kind: UploadKind, file: File): string {
   ].join(":");
 }
 
-async function waitBeforeRetry(attempt: number): Promise<void> {
-  await new Promise((resolve) => window.setTimeout(resolve, Math.min(800 * attempt, 3200)));
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
-async function uploadChunkWithRetry(uploadId: string, index: number, chunk: Blob, signal?: AbortSignal): Promise<UploadSession> {
+function shouldRetryUploadError(error: unknown): boolean {
+  if (isAbortError(error) || error instanceof AuthRequiredError || error instanceof CsrfRequiredError) return false;
+  const message = error instanceof Error ? error.message : String(error || "");
+  return (
+    !message ||
+    message === "Failed to fetch" ||
+    message === "Load failed" ||
+    message === "NetworkError when attempting to fetch resource." ||
+    message === "Invalid response" ||
+    message.includes("上传等待时间较长") ||
+    UPLOAD_RETRYABLE_STATUS_RE.test(message)
+  );
+}
+
+async function waitForNetwork(signal?: AbortSignal): Promise<void> {
+  if (typeof navigator === "undefined" || navigator.onLine !== false) return;
+  await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Upload canceled", "AbortError"));
+      return;
+    }
+    const cleanup = () => {
+      window.removeEventListener("online", handleOnline);
+      signal?.removeEventListener("abort", handleAbort);
+    };
+    const handleOnline = () => {
+      cleanup();
+      resolve();
+    };
+    const handleAbort = () => {
+      cleanup();
+      reject(new DOMException("Upload canceled", "AbortError"));
+    };
+    window.addEventListener("online", handleOnline, { once: true });
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
+}
+
+async function waitBeforeRetry(attempt: number, signal?: AbortSignal): Promise<void> {
+  await waitForNetwork(signal);
+  const jitter = Math.floor(Math.random() * 350);
+  const delay = Math.min(900 * 2 ** Math.max(attempt - 1, 0), 12000) + jitter;
+  await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Upload canceled", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(resolve, delay);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Upload canceled", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
+async function retryUploadRequest<T>(
+  request: () => Promise<T>,
+  signal?: AbortSignal,
+  maxAttempts = UPLOAD_MAX_ATTEMPTS,
+): Promise<T> {
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (signal?.aborted) throw new DOMException("Upload canceled", "AbortError");
     try {
-      return await uploadSessionChunk(uploadId, index, chunk);
+      return await request();
     } catch (error) {
       lastError = error;
-      if (attempt >= 5) break;
-      await waitBeforeRetry(attempt);
+      if (attempt >= maxAttempts || !shouldRetryUploadError(error)) break;
+      await waitBeforeRetry(attempt, signal);
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("分片上传失败");
+  throw lastError instanceof Error ? lastError : new Error("上传暂未完成，请稍后重试或重新选择文件");
+}
+
+async function uploadChunkWithRetry(
+  uploadId: string,
+  index: number,
+  chunk: Blob,
+  signal?: AbortSignal,
+  onUploadProgress?: (loaded: number) => void,
+): Promise<UploadSession> {
+  return retryUploadRequest(
+    () => withRequestTimeout(
+      (requestSignal) => uploadSessionChunkWithProgress(uploadId, index, chunk, {
+        signal: requestSignal,
+        onUploadProgress,
+      }),
+      signal,
+    ),
+    signal,
+  );
 }
 
 export function uploadFileResumable(
@@ -513,17 +786,25 @@ export async function uploadFileResumable(
     totalChunks: 0,
     status: "preparing",
   });
-  let session = await createOrResumeUploadSession({
-    kind,
-    filename: file.name || (kind === "novel_epub" ? "novel.epub" : "reference-image.png"),
-    content_type: file.type || "application/octet-stream",
-    total_size: file.size,
-    client_upload_id: options.clientUploadId || buildClientUploadId(kind, file),
-  });
+  await retryUploadRequest(() => withRequestTimeout(() => refreshCsrfToken(), options.signal, 15000), options.signal, 3);
+  let session = await retryUploadRequest(
+    () => withRequestTimeout(
+      (requestSignal) => createOrResumeUploadSession({
+        kind,
+        filename: file.name || (kind === "novel_epub" ? "novel.epub" : "reference-image.png"),
+        content_type: file.type || "application/octet-stream",
+        total_size: file.size,
+        client_upload_id: options.clientUploadId || buildClientUploadId(kind, file),
+      }, requestSignal),
+      options.signal,
+      20000,
+    ),
+    options.signal,
+  );
   options.onSession?.(session);
   const uploaded = new Set(session.uploaded_chunks || []);
-  const report = (status: UploadProgress["status"]) => {
-    const loaded = Math.min(uploaded.size * session.chunk_size, total);
+  const report = (status: UploadProgress["status"], currentChunkBytes = 0) => {
+    const loaded = Math.min(uploaded.size * session.chunk_size + currentChunkBytes, total);
     options.onProgress?.({
       loaded,
       total,
@@ -541,13 +822,33 @@ export async function uploadFileResumable(
       if (options.signal?.aborted) throw new DOMException("Upload canceled", "AbortError");
       const start = index * session.chunk_size;
       const chunk = file.slice(start, Math.min(start + session.chunk_size, file.size));
-      session = await uploadChunkWithRetry(session.upload_id, index, chunk, options.signal);
+      try {
+        session = await uploadChunkWithRetry(
+          session.upload_id,
+          index,
+          chunk,
+          options.signal,
+          (loaded) => report("uploading", loaded),
+        );
+      } catch (error) {
+        if (!shouldRetryUploadError(error)) throw error;
+        session = await retryUploadRequest(() => fetchUploadSession(session.upload_id), options.signal, 3);
+        (session.uploaded_chunks || []).forEach((item) => uploaded.add(item));
+        if (uploaded.has(index)) {
+          report("uploading");
+          continue;
+        }
+        throw error;
+      }
       options.onSession?.(session);
       (session.uploaded_chunks || []).forEach((item) => uploaded.add(item));
       report("uploading");
     }
     report("completing");
-    session = await completeUploadSession(session.upload_id);
+    session = await retryUploadRequest(
+      () => withRequestTimeout((requestSignal) => completeUploadSession(session.upload_id, requestSignal), options.signal, 60000),
+      options.signal,
+    );
     options.onSession?.(session);
   }
 

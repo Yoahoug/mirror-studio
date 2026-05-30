@@ -15,7 +15,8 @@ from PIL import Image
 
 from apps.generator.models import GenerateTask, GenerationTopic, ImageChannel
 from apps.generator.services import submit_generation_task
-from apps.novelviz.models import NovelUploadedBook, NovelVisualizationTask
+from apps.novelviz.models import NovelSceneImage, NovelUploadedBook, NovelVisualizationTask
+from apps.novelviz.services import reset_task_for_retry
 
 from .models import GeneratedImage, UploadSession
 from .services import expire_temporary_reference_images, expire_upload_sessions
@@ -432,3 +433,49 @@ class ResumableUploadTests(TestCase):
 
         self.assertEqual(create_response.status_code, 201)
         self.assertEqual(NovelVisualizationTask.objects.get(id=create_response.json()["data"]["id"]).uploaded_book_id, book["uploaded_book_id"])
+
+    def test_retry_existing_novel_task_reuses_scene_plan(self):
+        task = NovelVisualizationTask.objects.create(
+            user=self.user,
+            book_filename="story.epub",
+            book_source=NovelVisualizationTask.BookSource.UPLOADED,
+            scene_mode=NovelVisualizationTask.SceneMode.TARGETED,
+            target_plot="主角第一次进入星港",
+            status=NovelVisualizationTask.Status.FAILED,
+            progress_percent=100,
+            error_message="全部场景图片生成失败",
+            scenes_json=[
+                {
+                    "title": "星港初见",
+                    "chapter": "第一章",
+                    "story_significance": "主角进入新世界",
+                    "excerpt": "舱门缓缓打开。",
+                    "visual_prompt": "A cinematic star port opening in front of the hero.",
+                }
+            ],
+            logs=[{"id": 1, "type": "scene_plan_ready", "payload": {"message": "已定位指定剧情镜头"}, "created_at": "2026-01-01T00:00:00+00:00"}],
+            last_event_id=1,
+        )
+        scene = NovelSceneImage.objects.create(
+            task=task,
+            scene_number=1,
+            title="星港初见",
+            chapter="第一章",
+            story_significance="主角进入新世界",
+            excerpt="舱门缓缓打开。",
+            visual_prompt="A cinematic star port opening in front of the hero.",
+            status=NovelSceneImage.Status.FAILED,
+            error_message="HTTP 502",
+            attempts=1,
+        )
+
+        retried = reset_task_for_retry(task.id, self.user)
+        scene.refresh_from_db()
+
+        self.assertEqual(retried.status, NovelVisualizationTask.Status.QUEUED)
+        self.assertEqual(retried.progress_percent, 36)
+        self.assertEqual(retried.scenes_json[0]["title"], "星港初见")
+        self.assertEqual(retried.last_event_id, 1)
+        self.assertEqual(scene.status, NovelSceneImage.Status.PENDING)
+        self.assertEqual(scene.error_message, "")
+        self.assertEqual(scene.attempts, 0)

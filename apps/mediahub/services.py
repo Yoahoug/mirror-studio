@@ -109,6 +109,20 @@ def _uploaded_chunk_indexes(session: UploadSession) -> list[int]:
     return sorted({int(index) for index in (session.uploaded_chunks or [])})
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _abandon_upload_session(session: UploadSession) -> None:
+    session.status = UploadSession.Status.CANCELED
+    session.save(update_fields=["status", "updated_at"])
+    cleanup_upload_session_files(session)
+
+
 def _serialize_upload_session(session: UploadSession) -> dict:
     uploaded_chunks = _uploaded_chunk_indexes(session)
     return {
@@ -297,6 +311,9 @@ def create_or_resume_upload_session(
             if session.status == UploadSession.Status.EXPIRED:
                 cleanup_upload_session_files(session)
                 session = None
+            elif session.status == UploadSession.Status.UPLOADING and session.chunk_size != chunk_size:
+                _abandon_upload_session(session)
+                session = None
         if not session:
             session = UploadSession(
                 user=user,
@@ -354,7 +371,7 @@ def store_upload_chunk(*, user, upload_id: str, index: int, content: bytes) -> d
         target = _chunk_path(session, index)
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists() and target.stat().st_size == len(content):
-            existing_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+            existing_hash = _file_sha256(target)
             next_hash = hashlib.sha256(content).hexdigest()
             if existing_hash != next_hash:
                 target.write_bytes(content)
@@ -381,10 +398,11 @@ def _assemble_upload(session: UploadSession) -> tuple[Path, str]:
             chunk = _chunk_path(session, index)
             if not chunk.exists():
                 raise ValueError("上传分片不完整，请继续上传")
-            content = chunk.read_bytes()
-            total_size += len(content)
-            digest.update(content)
-            output.write(content)
+            with chunk.open("rb") as source:
+                for content in iter(lambda: source.read(1024 * 1024), b""):
+                    total_size += len(content)
+                    digest.update(content)
+                    output.write(content)
     if total_size != session.total_size:
         target.unlink(missing_ok=True)
         raise ValueError("上传文件大小校验失败，请重新上传")

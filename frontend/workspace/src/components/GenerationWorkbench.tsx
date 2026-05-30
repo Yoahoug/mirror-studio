@@ -575,13 +575,13 @@ export default function GenerationWorkbench({
 
       try {
         await startReferenceUpload(optimized.file, nextReferenceImageName);
-        addToast(optimized.compressed ? "参考图已压缩并完成预上传" : "参考图已完成预上传");
+        addToast(optimized.compressed ? "参考图已压缩并就绪" : "参考图已就绪");
       } catch (error: any) {
         if (error instanceof AuthRequiredError) {
           onOpenAuth("login");
           return;
         }
-        addToast(error.message || "参考图已就绪，预上传失败，开始生成时会自动重试", "info");
+        addToast(error.message || "参考图已就绪，开始生成时会继续处理", "info");
       }
     } catch (error: any) {
       addToast(error.message || "参考图处理失败", "error");
@@ -924,9 +924,9 @@ export default function GenerationWorkbench({
 
   const activeRatio = ratios.find((item) => item.size === sizeCode) || ratios[0];
   const currentStyle = styles.find((item) => item.value === styleCode) || styles[0];
-  const isSyncingResult = taskStatus === "succeeded" && !previewUrl;
+  const isSyncingResult = taskStatus === "succeeded" && !previewUrl && !isRestoringTask;
   const hasTerminalState = terminalStatuses.includes(taskStatus);
-  const isWorking = isGenerating || isRestoringTask || ((runningStatuses.includes(taskStatus) || isSyncingResult) && !previewUrl);
+  const isWorking = isGenerating || ((runningStatuses.includes(taskStatus) || isSyncingResult) && !previewUrl);
   const isPreparingReference = generationMode === "image_to_image" && isUploadingReference && !isWorking;
   const frameAspectRatio = previewSize ? previewSize.width / previewSize.height : getAspectRatioFromSizeCode(sizeCode);
   const frameStyle = { aspectRatio: String(Math.max(frameAspectRatio, 0.2)) };
@@ -985,7 +985,7 @@ export default function GenerationWorkbench({
                 <div className="mb-3 flex items-center justify-between">
                   <div>
                     <div className="text-sm font-black text-gray-950">参考图</div>
-                    <div className="mt-1 text-xs text-gray-400">支持 PNG / JPG / WEBP，上传后会自动压缩并分片预上传，弱网上可自动重试</div>
+                    <div className="mt-1 text-xs text-gray-400">支持 PNG / JPG / WEBP，上传完成后再提交</div>
                   </div>
                   {hasReferenceImage && (
                     <button
@@ -1019,11 +1019,11 @@ export default function GenerationWorkbench({
                         <div className="truncate text-sm font-bold text-gray-900">{referenceImageName || "已上传参考图"}</div>
                         <div className="mt-1 text-xs leading-5 text-gray-400">
                           {isUploadingReference
-                            ? `参考图正在预上传${referenceUploadPercent ? ` ${referenceUploadPercent}%` : ""}，点击开始生成时会自动等待上传完成。`
+                            ? `参考图正在准备${referenceUploadPercent ? ` ${referenceUploadPercent}%` : ""}，点击开始生成时会自动等待完成。`
                             : referenceUploadToken
                               ? "参考图已完整上传，开始生成时会直接复用上传结果。"
                               : referenceImageDataUrl
-                                ? "参考图已就绪，如预上传失败会在开始生成时断点续传。"
+                                ? "参考图已就绪，开始生成时会继续完成提交。"
                                 : "该任务的参考图已提交，当前页面仅保留文件名，如需重新生成请重新上传。"}
                         </div>
                         {isUploadingReference && (
@@ -1262,7 +1262,13 @@ export default function GenerationWorkbench({
                     </div>
                   ) : (
                     <div className="flex h-full flex-col items-center justify-center bg-[radial-gradient(circle_at_30%_20%,#ffffff,transparent_32%),linear-gradient(135deg,#f8fafc,#eceff3)] text-center">
-                      {isWorking ? (
+                          {isRestoringTask ? (
+                            <>
+                              <Loader2 className="h-10 w-10 animate-spin text-gray-400" />
+                              <p className="mt-4 text-sm font-bold text-gray-700">正在打开历史任务</p>
+                              <p className="mt-1 px-4 text-xs text-gray-400">请稍候</p>
+                            </>
+                          ) : isWorking ? (
                         <>
                           <Loader2 className="h-10 w-10 animate-spin text-gray-400" />
                           <p className="mt-4 text-sm font-bold text-gray-700">{isSyncingResult ? "图片已生成，正在同步结果" : "正在生成画面"}</p>
