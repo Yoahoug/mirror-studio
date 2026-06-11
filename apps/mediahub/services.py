@@ -626,6 +626,7 @@ def _download_filename(image: GeneratedImage) -> str:
 
 
 def _build_preview_content(image: GeneratedImage, *, max_dimension: int = 768) -> tuple[bytes, str]:
+    max_dimension = max(64, int(getattr(settings, "IMAGE_PREVIEW_MAX_DIMENSION", max_dimension) or max_dimension))
     content = read_image_bytes(image)
     try:
         rendered = Image.open(io.BytesIO(content))
@@ -677,7 +678,39 @@ def expire_image(image: GeneratedImage) -> None:
 
 def expire_available_images(limit: int = 100) -> int:
     now = timezone.now()
-    images = list(GeneratedImage.objects.filter(status=GeneratedImage.Status.AVAILABLE, expires_at__lt=now)[:limit])
+    images = list(
+        GeneratedImage.objects.filter(status=GeneratedImage.Status.AVAILABLE, expires_at__lt=now).order_by("expires_at", "id")[:limit]
+    )
     for image in images:
         expire_image(image)
     return len(images)
+
+
+def purge_deleted_image_files(limit: int = 100) -> int:
+    retention_days = max(int(getattr(settings, "IMAGE_HISTORY_SOFT_DELETE_RETENTION_DAYS", 7) or 0), 0)
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    images = list(
+        GeneratedImage.objects.filter(
+            status=GeneratedImage.Status.DELETED,
+            deleted_at__lte=cutoff,
+        )
+        .exclude(object_key="")
+        .order_by("deleted_at", "id")[:limit]
+    )
+    purged = 0
+    for image in images:
+        delete_storage_object(bucket_name=image.bucket_name, object_key=image.object_key)
+        image.object_key = ""
+        image.file_size = 0
+        image.save(update_fields=["object_key", "file_size", "updated_at"])
+        purged += 1
+    return purged
+
+
+def cleanup_media_storage(limit: int = 100) -> dict[str, int]:
+    return {
+        "expired_images": expire_available_images(limit=limit),
+        "temporary_reference_images": expire_temporary_reference_images(limit=limit),
+        "upload_sessions": expire_upload_sessions(limit=limit),
+        "deleted_image_files": purge_deleted_image_files(limit=limit),
+    }

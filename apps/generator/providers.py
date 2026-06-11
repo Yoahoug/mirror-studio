@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import time
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,10 +46,6 @@ class ProviderRequestError(ValueError):
         self.status_code = status_code
 
 
-class TaskAbortedError(RuntimeError):
-    pass
-
-
 class BaseImageProviderAdapter:
     def generate(self, *, task) -> ProviderResult:
         raise NotImplementedError
@@ -58,16 +53,6 @@ class BaseImageProviderAdapter:
 
 def _join_url(base_url: str, api_path: str) -> str:
     return f"{base_url.rstrip('/')}/{api_path.lstrip('/')}"
-
-
-def _normalize_status(value: str | None) -> str:
-    return (value or "").strip().lower()
-
-
-def _yunmeng_result_path(api_path: str) -> str:
-    if api_path.endswith("/submit"):
-        return api_path[: -len("/submit")] + "/result"
-    return settings.YUNMENG_RESULT_PATH
 
 
 def _extract_provider_message(data: dict, default: str) -> str:
@@ -210,15 +195,6 @@ def _openai_generation_timeout_seconds(channel) -> int:
     )
 
 
-def _size_to_aspect_ratio(size_code: str) -> str:
-    mapping = {
-        "1024x1024": "1:1",
-        "1536x1024": "3:2",
-        "1024x1536": "2:3",
-    }
-    return mapping.get(size_code, "1:1")
-
-
 class MockImageProviderAdapter(BaseImageProviderAdapter):
     def generate(self, *, task) -> ProviderResult:
         width, height = [int(item) for item in task.size_code.split("x")]
@@ -334,6 +310,7 @@ class OpenAICompatibleImageProviderAdapter(BaseImageProviderAdapter):
         prompt = (task.prompt or "").strip()
         if task.negative_prompt.strip():
             prompt = f"{prompt}\nAvoid: {task.negative_prompt.strip()}"
+        quality = getattr(task, "quality_code", "auto") or "auto"
 
         if task.generation_mode == "image_to_image" and (task.reference_object_key or task.reference_image_data_url):
             reference_content, mime_type = _load_task_reference_image(task)
@@ -346,14 +323,16 @@ class OpenAICompatibleImageProviderAdapter(BaseImageProviderAdapter):
                 "model": channel.model_name,
                 "prompt": prompt,
                 "size": task.size_code or "1024x1024",
+                "quality": quality,
             }
             file_stem = Path(task.reference_image_name or "reference-image").stem or "reference-image"
             file_name = f"{file_stem}{file_suffix}"
             logger.info(
-                "发送 OpenAI 兼容图生图请求 task_no=%s url=%s size=%s transport=multipart-image timeout=%s bytes=%s mime=%s",
+                "发送 OpenAI 兼容图生图请求 task_no=%s url=%s size=%s quality=%s transport=multipart-image timeout=%s bytes=%s mime=%s",
                 task.task_no,
                 edit_url,
                 task.size_code or "1024x1024",
+                quality,
                 edit_timeout_seconds,
                 len(reference_content),
                 mime_type,
@@ -389,13 +368,15 @@ class OpenAICompatibleImageProviderAdapter(BaseImageProviderAdapter):
                 "model": channel.model_name,
                 "prompt": prompt,
                 "size": task.size_code or "1024x1024",
+                "quality": quality,
             }
             generation_url = _join_url(channel.base_url, channel.api_path or "/v1/images/generations")
             logger.info(
-                "发送 OpenAI 兼容文生图请求 task_no=%s url=%s size=%s",
+                "发送 OpenAI 兼容文生图请求 task_no=%s url=%s size=%s quality=%s",
                 task.task_no,
                 generation_url,
                 task.size_code or "1024x1024",
+                quality,
             )
             generation_timeout_seconds = _openai_generation_timeout_seconds(channel)
             response_data, request_id = self._post_json(
@@ -439,144 +420,7 @@ class OpenAICompatibleImageProviderAdapter(BaseImageProviderAdapter):
         )
 
 
-class YunmengImageProviderAdapter(BaseImageProviderAdapter):
-    running_statuses = {"queued", "pending", "processing", "running"}
-    success_statuses = {"success", "succeeded", "completed"}
-    failure_statuses = {"failed", "error", "canceled", "cancelled"}
-
-    def _task_aborted(self, task_no: str) -> bool:
-        state = GenerateTask.objects.filter(task_no=task_no).values("status", "is_deleted").first()
-        if not state:
-            return True
-        return bool(state["is_deleted"] or state["status"] == GenerateTask.Status.CANCELED)
-
-    def _post_json(self, *, url: str, payload: dict, timeout_seconds: int) -> dict:
-        response = requests.post(
-            url,
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=timeout_seconds,
-        )
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise ValueError(f"云梦渠道返回了不可解析的响应：HTTP {response.status_code}") from exc
-        if response.status_code >= 400:
-            raise ValueError(_extract_provider_message(data, f"云梦渠道请求失败：HTTP {response.status_code}"))
-        return data
-
-    def _poll_until_finished(self, *, channel, api_key: str, task_id: str, task_no: str) -> dict:
-        result_url = _join_url(channel.base_url or settings.YUNMENG_BASE_URL, _yunmeng_result_path(channel.api_path or settings.YUNMENG_SUBMIT_PATH))
-        deadline = time.monotonic() + max(settings.YUNMENG_POLL_TIMEOUT_SECONDS, channel.timeout_seconds)
-        last_payload = {"pollAfterMs": 2000}
-        while time.monotonic() < deadline:
-            if self._task_aborted(task_no):
-                raise TaskAbortedError("任务已取消")
-            delay_ms = int(last_payload.get("pollAfterMs") or 2000)
-            time.sleep(max(delay_ms / 1000, 1))
-            last_payload = self._post_json(
-                url=result_url,
-                payload={
-                    "platformKey": api_key,
-                    "taskId": task_id,
-                    "model": channel.model_name or settings.YUNMENG_MODEL_NAME,
-                },
-                timeout_seconds=min(channel.timeout_seconds, 60),
-            )
-            status = _normalize_status(last_payload.get("status"))
-            if status in self.success_statuses:
-                return last_payload
-            if status in self.failure_statuses:
-                raise ValueError(_extract_provider_message(last_payload, "云梦渠道生图失败"))
-        raise TimeoutError("云梦渠道生图等待超时，请稍后在历史记录中重试")
-
-    def generate(self, *, task) -> ProviderResult:
-        channel = task.channel
-        api_key = channel.api_key or settings.YUNMENG_PLATFORM_KEY
-        if not api_key:
-            raise ValueError("缺少云梦渠道 platformKey")
-
-        prompt = (task.prompt or "").strip()
-        if task.negative_prompt.strip():
-            prompt = f"{prompt}\n避免出现：{task.negative_prompt.strip()}"
-
-        submit_url = _join_url(channel.base_url or settings.YUNMENG_BASE_URL, channel.api_path or settings.YUNMENG_SUBMIT_PATH)
-        submit_payload_data = {
-            "platformKey": api_key,
-            "model": channel.model_name or settings.YUNMENG_MODEL_NAME,
-            "prompt": prompt,
-            "aspectRatio": _size_to_aspect_ratio(task.size_code),
-            "imageSize": "1K",
-            "webHook": "-1",
-        }
-        if task.generation_mode == "image_to_image" and task.reference_image_data_url:
-            submit_payload_data["imageUrl"] = task.reference_image_data_url
-            submit_payload_data["referenceImage"] = task.reference_image_data_url
-
-        submit_payload = self._post_json(
-            url=submit_url,
-            payload=submit_payload_data,
-            timeout_seconds=channel.timeout_seconds,
-        )
-        logger.info(
-            "云梦渠道已提交任务 task_no=%s url=%s status=%s",
-            task.task_no,
-            submit_url,
-            _normalize_status(submit_payload.get("status")),
-        )
-
-        status = _normalize_status(submit_payload.get("status"))
-        task_id = submit_payload.get("taskId") or submit_payload.get("task_id") or ""
-        if status in self.failure_statuses:
-            raise ValueError(_extract_provider_message(submit_payload, "云梦渠道提交失败"))
-        if status in self.running_statuses:
-            if not task_id:
-                raise ValueError("云梦渠道未返回 taskId，无法继续轮询")
-            result_payload = self._poll_until_finished(channel=channel, api_key=api_key, task_id=task_id, task_no=task.task_no)
-        elif status in self.success_statuses:
-            result_payload = submit_payload
-        else:
-            raise ValueError(_extract_provider_message(submit_payload, "云梦渠道返回了未知状态"))
-
-        images: list[ProviderImage] = []
-        results = result_payload.get("results") or []
-        for item in results:
-            url = item.get("url")
-            if url:
-                images.append(ProviderImage(mime_type="image/png", remote_url=url))
-        if result_payload.get("imageUrl"):
-            images.append(ProviderImage(mime_type="image/png", remote_url=result_payload["imageUrl"]))
-        deduped_images = []
-        seen_urls = set()
-        for image in images:
-            if image.remote_url and image.remote_url in seen_urls:
-                continue
-            if image.remote_url:
-                seen_urls.add(image.remote_url)
-            deduped_images.append(image)
-        if not deduped_images:
-            raise ValueError("云梦渠道未返回可下载图片")
-
-        logger.info(
-            "云梦渠道已返回结果 task_no=%s images=%s request_id=%s",
-            task.task_no,
-            len(deduped_images),
-            task_id or result_payload.get("taskId", ""),
-        )
-
-        return ProviderResult(
-            request_id=task_id or result_payload.get("taskId", ""),
-            raw_response={"submit": submit_payload, "result": result_payload},
-            images=deduped_images,
-        )
-
-
 def get_adapter(*, task=None) -> BaseImageProviderAdapter:
     if settings.MOCK_PROVIDER_ENABLED:
         return MockImageProviderAdapter()
-    channel = getattr(task, "channel", None)
-    api_path = ((getattr(channel, "api_path", "") or "").strip().lower()) if channel else ""
-    provider_name = ((getattr(channel, "provider_name", "") or "").strip().lower()) if channel else ""
-    if "/images/generations" in api_path or provider_name in {"openai", "openai-compatible", "openai compatible"}:
-        return OpenAICompatibleImageProviderAdapter()
-    return YunmengImageProviderAdapter()
+    return OpenAICompatibleImageProviderAdapter()

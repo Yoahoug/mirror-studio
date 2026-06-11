@@ -8,7 +8,7 @@ export const translations = {
       about: "关于绘镜",
       engine: "绘镜 Creative Engine",
       tagline: "© 2026 Yoahoug. All Rights Reserved.",
-      version: "v1.1",
+      version: "v1.2",
       stable: "2026 Stable"
     },
     header: {
@@ -147,7 +147,7 @@ export const translations = {
       about: "About Mirror Lens",
       engine: "Mirror Lens Creative Engine",
       tagline: "© 2026 Yoahoug. All Rights Reserved.",
-      version: "v1.1",
+      version: "v1.2",
       stable: "2026 Stable"
     },
     header: {

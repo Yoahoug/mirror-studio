@@ -294,7 +294,10 @@ class AccountPasswordAPIView(LoginRequiredMixin, View):
 class AccountSummaryAPIView(LoginRequiredMixin, View):
     def get(self, request: HttpRequest):
         recent_tasks = list(
-            GenerateTask.objects.filter(user=request.user).select_related("channel").order_by("-created_at")[:3]
+            GenerateTask.objects.filter(user=request.user)
+            .select_related("channel")
+            .defer("provider_response_json", "reference_image_data_url")
+            .order_by("-created_at")[:3]
         )
         recent_tasks = reconcile_recent_tasks(recent_tasks)
         profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"nickname": request.user.username})

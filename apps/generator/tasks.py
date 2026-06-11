@@ -10,7 +10,7 @@ from django.db import close_old_connections
 from apps.mediahub.services import delete_storage_object, fetch_remote_image, store_generated_image
 
 from .models import GenerateTask
-from .providers import ProviderRequestError, TaskAbortedError, get_adapter
+from .providers import ProviderRequestError, get_adapter
 from .services import (
     extend_task_lease,
     is_task_abort_requested,
@@ -98,7 +98,7 @@ def _generate_claimed_task(task: GenerateTask) -> str:
                 )
                 return task.task_no
             except Exception as exc:
-                if isinstance(exc, TaskAbortedError) or _task_should_abort(task.task_no):
+                if _task_should_abort(task.task_no):
                     logger.info("生图任务在执行过程中被终止 task_no=%s", task.task_no)
                     return task.task_no
                 last_exc = exc
@@ -144,7 +144,7 @@ def _generate_claimed_task(task: GenerateTask) -> str:
                 "max_attempts": max_attempts,
             }
         )
-        if isinstance(exc, TaskAbortedError) or _task_should_abort(task.task_no):
+        if _task_should_abort(task.task_no):
             return task.task_no
         if getattr(task, "reference_object_key", ""):
             delete_storage_object(bucket_name=task.reference_bucket_name or settings.MINIO_BUCKET, object_key=task.reference_object_key)

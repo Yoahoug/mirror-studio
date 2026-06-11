@@ -25,8 +25,12 @@ from apps.risk.services import ensure_prompt_safe, ensure_task_rate_limit
 
 from .models import GenerateTask, GenerationTopic, ImageChannel
 
-ALLOWED_SIZES = {"1024x1024", "1536x1024", "1024x1536"}
+SIZE_CODE_RE = re_compile(r"^(\d{2,5})x(\d{2,5})$", IGNORECASE)
+MIN_IMAGE_PIXELS = 655_360
+MAX_IMAGE_EDGE = 2048
+MAX_IMAGE_ASPECT_RATIO = 3
 ALLOWED_STYLES = {"general", "cinematic", "anime", "photography"}
+ALLOWED_QUALITIES = {"auto", "low", "medium", "high"}
 ALLOWED_GENERATION_MODES = {
     GenerateTask.Mode.TEXT_TO_IMAGE,
     GenerateTask.Mode.IMAGE_TO_IMAGE,
@@ -69,6 +73,32 @@ def bump_task_progress(task: GenerateTask, progress_percent: int) -> GenerateTas
 def build_topic_title(prompt: str) -> str:
     stripped = (prompt or "").strip()
     return stripped[:24] or "新的创作"
+
+
+def normalize_size_code(size_code: str) -> str:
+    normalized = (size_code or "1024x1024").strip().lower()
+    match = SIZE_CODE_RE.match(normalized)
+    if not match:
+        raise ValueError("不支持的尺寸")
+
+    width = int(match.group(1))
+    height = int(match.group(2))
+    if width % 16 != 0 or height % 16 != 0:
+        raise ValueError("尺寸宽高必须是 16px 的倍数")
+    if max(width, height) > MAX_IMAGE_EDGE:
+        raise ValueError("尺寸最大边不能超过 2048px")
+    if min(width, height) <= 0 or max(width, height) / min(width, height) > MAX_IMAGE_ASPECT_RATIO:
+        raise ValueError("尺寸长短边比例不能超过 3:1")
+    if width * height < MIN_IMAGE_PIXELS:
+        raise ValueError("尺寸总像素过小，请提高分辨率")
+    return f"{width}x{height}"
+
+
+def normalize_quality_code(quality_code: str) -> str:
+    normalized = (quality_code or "auto").strip().lower()
+    if normalized not in ALLOWED_QUALITIES:
+        raise ValueError("不支持的质量")
+    return normalized
 
 
 def _validate_reference_image_content(*, content: bytes, mime_type: str, name: str = "") -> tuple[bytes, str, str]:
@@ -148,6 +178,7 @@ def submit_generation_task(
     negative_prompt: str = "",
     style_code: str = "general",
     size_code: str = "1024x1024",
+    quality_code: str = "auto",
     topic_id: int | None = None,
     client_request_id: str = "",
     client_ip: str | None = None,
@@ -160,7 +191,8 @@ def submit_generation_task(
     negative_prompt = (negative_prompt or "").strip()
     client_request_id = (client_request_id or "").strip()[:64]
     style_code = style_code or "general"
-    size_code = size_code or "1024x1024"
+    size_code = normalize_size_code(size_code or "1024x1024")
+    quality_code = normalize_quality_code(quality_code)
     generation_mode = generation_mode or GenerateTask.Mode.TEXT_TO_IMAGE
     reference_image_name = (reference_image_name or "").strip()[:255]
     reference_upload_token = (reference_upload_token or "").strip()
@@ -168,8 +200,6 @@ def submit_generation_task(
         raise ValueError("Prompt 过长")
     if len(negative_prompt) > 2000:
         raise ValueError("反向提示词过长")
-    if size_code not in ALLOWED_SIZES:
-        raise ValueError("不支持的尺寸")
     if style_code not in ALLOWED_STYLES:
         raise ValueError("不支持的风格")
     if generation_mode not in ALLOWED_GENERATION_MODES:
@@ -229,6 +259,7 @@ def submit_generation_task(
         negative_prompt=negative_prompt,
         style_code=style_code,
         size_code=size_code,
+        quality_code=quality_code,
         reference_image_name=normalized_reference_name,
         reference_image_data_url="",
         client_request_id=client_request_id,
@@ -372,8 +403,7 @@ def build_public_error_message(task: GenerateTask) -> str:
 
 def _stalled_task_timeout_seconds(task: GenerateTask) -> int:
     channel_timeout = int(getattr(getattr(task, "channel", None), "timeout_seconds", 60) or 60)
-    poll_timeout = int(getattr(settings, "YUNMENG_POLL_TIMEOUT_SECONDS", 0) or 0)
-    running_timeout = max(channel_timeout + 120, poll_timeout + 60, 180)
+    running_timeout = max(channel_timeout + 120, 180)
     if task.generation_mode == GenerateTask.Mode.IMAGE_TO_IMAGE:
         running_timeout = max(
             running_timeout,
@@ -591,6 +621,7 @@ def serialize_task(task: GenerateTask, *, user=None, include_urls: bool = False,
         "negative_prompt": task.negative_prompt,
         "style_code": task.style_code,
         "size_code": task.size_code,
+        "quality_code": task.quality_code,
         "reference_image_name": task.reference_image_name,
         "reference_image_attached": bool(task.reference_object_key or task.reference_image_data_url),
         "reference_image_data_url": task.reference_image_data_url if include_reference else "",

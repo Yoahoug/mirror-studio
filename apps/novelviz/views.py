@@ -100,6 +100,7 @@ class NovelTaskListCreateAPIView(LoginRequiredMixin, View):
     def get(self, request):
         tasks = list(
             NovelVisualizationTask.objects.filter(user=request.user)
+            .defer("logs")
             .prefetch_related("images")
             .order_by("-created_at")[:30]
         )
@@ -110,6 +111,7 @@ class NovelTaskListCreateAPIView(LoginRequiredMixin, View):
                 pass
         tasks = (
             NovelVisualizationTask.objects.filter(user=request.user)
+            .defer("logs")
             .prefetch_related("images")
             .order_by("-created_at")[:30]
         )

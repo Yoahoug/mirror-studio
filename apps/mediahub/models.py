@@ -50,6 +50,7 @@ class GeneratedImage(TimeStampedModel):
         indexes = [
             models.Index(fields=["user", "expires_at"]),
             models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["status", "deleted_at"], name="media_gi_status_del_idx"),
         ]
         verbose_name = "历史图片"
         verbose_name_plural = "历史图片"

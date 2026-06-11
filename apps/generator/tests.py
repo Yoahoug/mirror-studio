@@ -1,19 +1,24 @@
 import json
 import io
 import base64
+import importlib
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from django.test.utils import CaptureQueriesContext
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.apps import apps
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.audit.models import CallbackEventLog
 from apps.billing.models import QuotaAccount
+from apps.novelviz.models import NovelVisualizationTask
 from PIL import Image
 
 from .models import GenerateTask, ImageChannel
@@ -112,7 +117,8 @@ class GeneratorFlowTests(TestCase):
                 {
                     "prompt": "一只橘猫在窗边晒太阳",
                     "style_code": "photography",
-                    "size_code": "1024x1024",
+                    "size_code": "1536x864",
+                    "quality_code": "low",
                     "wait_seconds": 2,
                 }
             ),
@@ -125,9 +131,43 @@ class GeneratorFlowTests(TestCase):
         data = resp.json()["data"]
         self.assertEqual(data["status"], GenerateTask.Status.SUCCEEDED)
         self.assertEqual(data["progress_percent"], 100)
+        self.assertEqual(data["size_code"], "1536x864")
+        self.assertEqual(data["quality_code"], "low")
         self.assertEqual(len(data["images"]), 1)
         self.assertIn("preview_url", data["images"][0])
         self.assertIn("download_url", data["images"][0])
+
+    def test_submit_generation_task_accepts_2k_custom_size_and_quality(self):
+        task, _ = submit_generation_task(
+            user=self.user,
+            prompt="2K 自定义比例海报",
+            size_code="2048x1152",
+            quality_code="high",
+            client_ip="127.0.0.1",
+        )
+
+        self.assertEqual(task.size_code, "2048x1152")
+        self.assertEqual(task.quality_code, "high")
+
+    def test_submit_generation_task_rejects_invalid_size_and_quality(self):
+        cases = [
+            {"size_code": "1537x864", "message": "尺寸宽高必须是 16px 的倍数"},
+            {"size_code": "2048x512", "message": "尺寸长短边比例不能超过 3:1"},
+            {"size_code": "640x640", "message": "尺寸总像素过小，请提高分辨率"},
+            {"size_code": "2160x1216", "message": "尺寸最大边不能超过 2048px"},
+            {"quality_code": "ultra", "message": "不支持的质量"},
+        ]
+
+        for case in cases:
+            with self.subTest(case=case):
+                with self.assertRaisesMessage(ValueError, case["message"]):
+                    submit_generation_task(
+                        user=self.user,
+                        prompt="非法参数",
+                        size_code=case.get("size_code", "1024x1024"),
+                        quality_code=case.get("quality_code", "auto"),
+                        client_ip="127.0.0.1",
+                    )
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=False)
     def test_dispatch_task_keeps_task_queued_for_worker_pull(self):
@@ -261,6 +301,36 @@ class GeneratorFlowTests(TestCase):
         self.assertIn("pagination", data)
         self.assertEqual(data["items"][0]["task_no"], task.task_no)
         self.assertIn("preview_url", data["items"][0]["images"][0])
+
+    def test_workspace_history_defers_novel_task_logs(self):
+        self.client.force_login(self.user)
+        task, _ = submit_generation_task(
+            user=self.user,
+            prompt="统一历史里的普通生图",
+            client_ip="127.0.0.1",
+        )
+        novel_task = NovelVisualizationTask.objects.create(
+            user=self.user,
+            book_filename="story.epub",
+            status=NovelVisualizationTask.Status.FAILED,
+            progress_percent=100,
+            logs=[{"id": 1, "type": "task_failed", "payload": {"message": "large log"}, "created_at": "2026-01-01T00:00:00+00:00"}],
+        )
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(reverse("api-workspace-history") + "?page=1&page_size=10", secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        task_numbers = [item["task_no"] for item in response.json()["data"]["items"]]
+        self.assertIn(task.task_no, task_numbers)
+        self.assertIn(f"novelviz:{novel_task.id}", task_numbers)
+        novel_task_selects = [
+            query["sql"]
+            for query in queries
+            if 'FROM "novelviz_novelvisualizationtask"' in query["sql"]
+            and "SELECT" in query["sql"].upper()
+        ]
+        self.assertTrue(novel_task_selects)
+        self.assertFalse(any('"novelviz_novelvisualizationtask"."logs"' in sql for sql in novel_task_selects))
 
     def test_delete_history_hides_task_and_marks_image_deleted(self):
         self.client.force_login(self.user)
@@ -431,69 +501,6 @@ class GeneratorFlowTests(TestCase):
         self.assertEqual(task.images.count(), 1)
         self.assertEqual(task.provider_response_json["_meta"]["attempts_used"], 3)
 
-    @override_settings(MOCK_PROVIDER_ENABLED=False, YUNMENG_POLL_TIMEOUT_SECONDS=5)
-    def test_yunmeng_channel_can_poll_and_store_remote_image(self):
-        self.channel.name = "云梦渠道"
-        self.channel.channel_code = "yunmeng"
-        self.channel.base_url = "https://ymapi.wancores.com"
-        self.channel.api_path = "/api/public/image/draw/submit"
-        self.channel.model_name = "gpt-image-2"
-        self.channel.api_key = "platform-key"
-        self.channel.save(
-            update_fields=[
-                "name",
-                "channel_code",
-                "base_url",
-                "api_path",
-                "model_name",
-                "api_key_encrypted",
-                "updated_at",
-            ]
-        )
-
-        task, _ = submit_generation_task(
-            user=self.user,
-            prompt="浅色极简风的创作工作台",
-            style_code="general",
-            size_code="1024x1024",
-            client_ip="127.0.0.1",
-        )
-
-        class DummyResponse:
-            def __init__(self, payload: dict, status_code: int = 200):
-                self.payload = payload
-                self.status_code = status_code
-
-            def json(self):
-                return self.payload
-
-        with patch(
-            "apps.generator.providers.requests.post",
-            side_effect=[
-                DummyResponse({"status": "running", "taskId": "ym-task-1", "pollAfterMs": 0}),
-                DummyResponse(
-                    {
-                        "status": "succeeded",
-                        "taskId": "ym-task-1",
-                        "imageUrl": "https://example.com/result.png",
-                        "results": [{"url": "https://example.com/result.png"}],
-                    }
-                ),
-            ],
-        ), patch("apps.generator.providers.time.sleep"), patch(
-            "apps.generator.tasks.fetch_remote_image",
-            return_value=(self.make_png_bytes(), "image/png"),
-        ):
-            generate_image_task(task.task_no)
-
-        task.refresh_from_db()
-        account = QuotaAccount.objects.get(user=self.user)
-
-        self.assertEqual(task.status, GenerateTask.Status.SUCCEEDED)
-        self.assertEqual(task.images.count(), 1)
-        self.assertEqual(account.available_quota, 0)
-        self.assertEqual(account.frozen_quota, 0)
-
     @override_settings(MOCK_PROVIDER_ENABLED=False)
     def test_openai_compatible_channel_can_decode_b64_and_store_image(self):
         self.channel.name = "OpenAI Compatible"
@@ -518,7 +525,8 @@ class GeneratorFlowTests(TestCase):
             user=self.user,
             prompt="一只蓝色小鸟站在茶杯上",
             style_code="general",
-            size_code="1024x1024",
+            size_code="2048x1152",
+            quality_code="medium",
             client_ip="127.0.0.1",
         )
 
@@ -536,14 +544,17 @@ class GeneratorFlowTests(TestCase):
                     "size": "1024x1024",
                 }
 
-        with patch("apps.generator.providers.requests.post", return_value=DummyResponse()):
+        with patch("apps.generator.providers.requests.post", return_value=DummyResponse()) as mock_post:
             generate_image_task(task.task_no)
 
         task.refresh_from_db()
         account = QuotaAccount.objects.get(user=self.user)
+        request_payload = mock_post.call_args.kwargs["json"]
 
         self.assertEqual(task.status, GenerateTask.Status.SUCCEEDED)
         self.assertEqual(task.provider_request_id, "req-openai-1")
+        self.assertEqual(request_payload["size"], "2048x1152")
+        self.assertEqual(request_payload["quality"], "medium")
         self.assertEqual(task.images.count(), 1)
         self.assertEqual(task.provider_response_json["data"][0]["b64_json"].startswith("<omitted:"), True)
         self.assertEqual(account.available_quota, 0)
@@ -573,6 +584,8 @@ class GeneratorFlowTests(TestCase):
             user=self.user,
             prompt="把原图重绘成海报",
             generation_mode="image_to_image",
+            size_code="1536x864",
+            quality_code="high",
             reference_image_name="ref.png",
             reference_image_data_url=self.make_png_data_url(),
             client_ip="127.0.0.1",
@@ -597,9 +610,41 @@ class GeneratorFlowTests(TestCase):
         request_files = mock_post.call_args.kwargs["files"]
         self.assertEqual(request_data["model"], "gpt-image-2")
         self.assertEqual(request_data["prompt"], "把原图重绘成海报")
-        self.assertEqual(request_data["size"], "1024x1024")
+        self.assertEqual(request_data["size"], "1536x864")
+        self.assertEqual(request_data["quality"], "high")
         self.assertIn("image", request_files)
         uploaded_name, uploaded_bytes, uploaded_mime = request_files["image"]
         self.assertTrue(uploaded_name.startswith("ref"))
         self.assertGreater(len(uploaded_bytes), 0)
         self.assertIn(uploaded_mime, {"image/png", "image/jpeg"})
+
+
+class GeneratorMigrationTests(TestCase):
+    def test_migration_disables_legacy_yunmeng_channels(self):
+        migration_module = importlib.import_module("apps.generator.migrations.0012_task_quality_and_disable_yunmeng")
+
+        ImageChannel.objects.create(
+            name="旧云梦",
+            channel_code="legacy-yunmeng",
+            channel_type="image",
+            provider_name="云梦",
+            base_url="https://ymapi.wancores.com",
+            api_path="/api/public/image/draw/submit",
+            model_name="gpt-image-2",
+            is_active=True,
+        )
+        ImageChannel.objects.create(
+            name="OpenAI 中转",
+            channel_code="openai-compatible",
+            channel_type="image",
+            provider_name="OpenAI-Compatible",
+            base_url="https://image-gateway.example.test",
+            api_path="/v1/images/generations",
+            model_name="gpt-image-2",
+            is_active=True,
+        )
+
+        migration_module.disable_legacy_yunmeng_channels(apps, None)
+
+        self.assertFalse(ImageChannel.objects.get(channel_code="legacy-yunmeng").is_active)
+        self.assertTrue(ImageChannel.objects.get(channel_code="openai-compatible").is_active)

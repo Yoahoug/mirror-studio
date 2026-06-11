@@ -35,6 +35,13 @@ def _json_payload(request: HttpRequest) -> dict:
     return parse_request_payload(request)
 
 
+def _limited_history_candidates(queryset, *, page: int, page_size: int):
+    # Pull only enough rows from each ordered source to build the requested merged page.
+    # This avoids reading every historical task into Python before pagination.
+    limit = page * page_size
+    return list(queryset[:limit])
+
+
 class TopicListCreateAPIView(LoginRequiredMixin, View):
     def get(self, request):
         topics = GenerationTopic.objects.filter(user=request.user, is_archived=False).order_by("-last_task_at")[:50]
@@ -135,6 +142,7 @@ class TaskListCreateAPIView(LoginRequiredMixin, View):
                 negative_prompt=payload.get("negative_prompt", ""),
                 style_code=payload.get("style_code", "general"),
                 size_code=payload.get("size_code", "1024x1024"),
+                quality_code=payload.get("quality_code", "auto"),
                 generation_mode=payload.get("generation_mode", GenerateTask.Mode.TEXT_TO_IMAGE),
                 reference_image_data_url=payload.get("reference_image_data_url", ""),
                 reference_image_name=payload.get("reference_image_name", ""),
@@ -255,6 +263,7 @@ def _serialize_novel_history_task(task: NovelVisualizationTask) -> dict:
         "negative_prompt": "",
         "style_code": "",
         "size_code": "1024x1024",
+        "quality_code": "auto",
         "reference_image_name": task.book_filename,
         "reference_image_attached": False,
         "reference_image_data_url": "",
@@ -286,24 +295,28 @@ class WorkspaceHistoryAPIView(LoginRequiredMixin, View):
         page_size = min(max(page_size, 1), 48)
 
         generation_tasks = GenerateTask.objects.filter(user=request.user, is_deleted=False).select_related("topic", "channel").prefetch_related("images")
-        novel_tasks = NovelVisualizationTask.objects.filter(user=request.user).prefetch_related("images")
+        novel_tasks = (
+            NovelVisualizationTask.objects.filter(user=request.user)
+            .defer("logs")
+            .prefetch_related("images")
+        )
         if keyword:
             generation_tasks = generation_tasks.filter(prompt__icontains=keyword)
             novel_tasks = novel_tasks.filter(book_filename__icontains=keyword)
 
         items = [
             (task.created_at, "generation", task)
-            for task in generation_tasks
+            for task in _limited_history_candidates(generation_tasks, page=page, page_size=page_size)
         ] + [
             (task.created_at, "novelviz", task)
-            for task in novel_tasks
+            for task in _limited_history_candidates(novel_tasks, page=page, page_size=page_size)
         ]
         items.sort(key=lambda item: (item[0], getattr(item[2], "id", 0)), reverse=True)
+        page_items = items[(page - 1) * page_size : page * page_size]
+        total = generation_tasks.count() + novel_tasks.count()
 
-        paginator = Paginator(items, page_size)
-        page_obj = paginator.get_page(page)
         serialized = []
-        for _, kind, task in page_obj.object_list:
+        for _, kind, task in page_items:
             if kind == "novelviz":
                 serialized.append(_serialize_novel_history_task(task))
             else:
@@ -312,12 +325,12 @@ class WorkspaceHistoryAPIView(LoginRequiredMixin, View):
             {
                 "items": serialized,
                 "pagination": {
-                    "page": page_obj.number,
+                    "page": page,
                     "page_size": page_size,
-                    "total": paginator.count,
-                    "total_pages": paginator.num_pages,
-                    "has_next": page_obj.has_next(),
-                    "has_previous": page_obj.has_previous(),
+                    "total": total,
+                    "total_pages": (total + page_size - 1) // page_size if total else 1,
+                    "has_next": page * page_size < total,
+                    "has_previous": page > 1,
                 },
             }
         )

@@ -37,10 +37,26 @@ interface GenerationWorkbenchProps {
   onGenerationSubmitted?: () => void;
 }
 
-const ratios = [
-  { label: "1:1", size: "1024x1024" },
-  { label: "16:9", size: "1536x1024" },
-  { label: "9:16", size: "1024x1536" },
+const ratioPresets = [
+  { label: "1:1", width: 1, height: 1 },
+  { label: "4:3", width: 4, height: 3 },
+  { label: "3:2", width: 3, height: 2 },
+  { label: "16:9", width: 16, height: 9 },
+  { label: "9:16", width: 9, height: 16 },
+  { label: "2:3", width: 2, height: 3 },
+  { label: "3:4", width: 3, height: 4 },
+];
+
+const resolutionOptions = [
+  { label: "1K", value: "1k" },
+  { label: "2K", value: "2k" },
+];
+
+const qualityOptions = [
+  { label: "自动", value: "auto" },
+  { label: "草稿", value: "low" },
+  { label: "标准", value: "medium" },
+  { label: "精细", value: "high" },
 ];
 
 const styles = [
@@ -68,6 +84,13 @@ const SUBMIT_RETRY_DELAY_MS = 900;
 const SUBMIT_RETRY_MAX_ATTEMPTS = 2;
 
 type GenerationMode = "text_to_image" | "image_to_image";
+type ResolutionCode = "1k" | "2k";
+type QualityCode = "auto" | "low" | "medium" | "high";
+
+interface RatioValue {
+  width: number;
+  height: number;
+}
 
 function parseTimestamp(value?: string | null): number {
   if (!value) return 0;
@@ -174,6 +197,71 @@ function renameReferenceFile(name: string, mimeType: string): string {
   return `${baseName}${extension}`;
 }
 
+function greatestCommonDivisor(a: number, b: number): number {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y) {
+    const next = x % y;
+    x = y;
+    y = next;
+  }
+  return x || 1;
+}
+
+function normalizeRatio(width: number, height: number): RatioValue {
+  const safeWidth = Math.max(1, Math.min(Math.round(width || 1), 99));
+  const safeHeight = Math.max(1, Math.min(Math.round(height || 1), 99));
+  const divisor = greatestCommonDivisor(safeWidth, safeHeight);
+  return {
+    width: Math.max(1, Math.round(safeWidth / divisor)),
+    height: Math.max(1, Math.round(safeHeight / divisor)),
+  };
+}
+
+function formatRatioLabel(ratio: RatioValue): string {
+  return `${ratio.width}:${ratio.height}`;
+}
+
+function roundToMultiple(value: number, multiple: number): number {
+  return Math.max(multiple, Math.round(value / multiple) * multiple);
+}
+
+function sizeCodeFromRatio(ratio: RatioValue, resolution: ResolutionCode): string {
+  const normalized = normalizeRatio(ratio.width, ratio.height);
+  const square = normalized.width === normalized.height;
+  if (resolution === "1k" && square) {
+    return "1024x1024";
+  }
+
+  const longEdge = resolution === "2k" ? 2048 : 1536;
+  const isLandscape = normalized.width >= normalized.height;
+  const shortEdge = roundToMultiple(
+    longEdge * (isLandscape ? normalized.height / normalized.width : normalized.width / normalized.height),
+    16,
+  );
+  const width = isLandscape ? longEdge : shortEdge;
+  const height = isLandscape ? shortEdge : longEdge;
+  return `${width}x${height}`;
+}
+
+function parseSizeCode(sizeCode: string): { width: number; height: number } | null {
+  const [width, height] = (sizeCode || "").split("x").map((item) => Number(item));
+  if (!width || !height) return null;
+  return { width, height };
+}
+
+function ratioFromSizeCode(sizeCode: string): RatioValue {
+  const parsed = parseSizeCode(sizeCode);
+  if (!parsed) return { width: 16, height: 9 };
+  return normalizeRatio(parsed.width, parsed.height);
+}
+
+function resolutionFromSizeCode(sizeCode: string): ResolutionCode {
+  const parsed = parseSizeCode(sizeCode);
+  if (!parsed) return "1k";
+  return Math.max(parsed.width, parsed.height) > 1536 ? "2k" : "1k";
+}
+
 async function optimizeReferenceImageFile(file: File): Promise<{
   dataUrl: string;
   fileName: string;
@@ -263,7 +351,11 @@ export default function GenerationWorkbench({
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
-  const [sizeCode, setSizeCode] = useState("1536x1024");
+  const [ratio, setRatio] = useState<RatioValue>({ width: 16, height: 9 });
+  const [customRatioWidth, setCustomRatioWidth] = useState("16");
+  const [customRatioHeight, setCustomRatioHeight] = useState("9");
+  const [resolutionCode, setResolutionCode] = useState<ResolutionCode>("1k");
+  const [qualityCode, setQualityCode] = useState<QualityCode>("auto");
   const [styleCode, setStyleCode] = useState("photography");
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text_to_image");
   const [referenceImageDataUrl, setReferenceImageDataUrl] = useState("");
@@ -293,6 +385,16 @@ export default function GenerationWorkbench({
   const referenceUploadPromiseRef = useRef<Promise<ReferenceUploadResult | null> | null>(null);
   const referenceUploadAbortRef = useRef<AbortController | null>(null);
   const activeReferenceUploadIdRef = useRef("");
+  const addToastRef = useRef(addToast);
+  const onGenerationSubmittedRef = useRef(onGenerationSubmitted);
+
+  useEffect(() => {
+    addToastRef.current = addToast;
+  }, [addToast]);
+
+  useEffect(() => {
+    onGenerationSubmittedRef.current = onGenerationSubmitted;
+  }, [onGenerationSubmitted]);
 
   const beginTaskSession = () => {
     taskSessionRef.current += 1;
@@ -328,6 +430,15 @@ export default function GenerationWorkbench({
       message.includes("reference_upload_token") ||
       (message.includes("参考图") && (message.includes("失效") || message.includes("无效") || message.includes("重新上传")))
     );
+  };
+
+  const applyImageSettingsFromTask = (detail: GenerationTask) => {
+    const restoredRatio = ratioFromSizeCode(detail.size_code || "1536x864");
+    setRatio(restoredRatio);
+    setCustomRatioWidth(String(restoredRatio.width));
+    setCustomRatioHeight(String(restoredRatio.height));
+    setResolutionCode(resolutionFromSizeCode(detail.size_code || "1536x864"));
+    setQualityCode((detail.quality_code || "auto") as QualityCode);
   };
 
   const startReferenceUpload = async (file: File, fileName: string): Promise<ReferenceUploadResult | null> => {
@@ -436,6 +547,11 @@ export default function GenerationWorkbench({
     completionToastTaskRef.current = "";
     setPrompt("");
     setNegativePrompt("");
+    setRatio({ width: 16, height: 9 });
+    setCustomRatioWidth("16");
+    setCustomRatioHeight("9");
+    setResolutionCode("1k");
+    setQualityCode("auto");
     setGenerationMode("text_to_image");
     setReferenceImageDataUrl("");
     setReferenceImageName("");
@@ -612,7 +728,7 @@ export default function GenerationWorkbench({
         }
         setPrompt(detail.prompt || "");
         setNegativePrompt(detail.negative_prompt || "");
-        setSizeCode(detail.size_code || "1536x1024");
+        applyImageSettingsFromTask(detail);
         setStyleCode(detail.style_code || "photography");
         await applyTaskDetail(detail, sessionId);
       })
@@ -657,7 +773,7 @@ export default function GenerationWorkbench({
         if (ignore || !isCurrentTaskSession(sessionId)) return;
         setPrompt(detail.prompt || "");
         setNegativePrompt(detail.negative_prompt || "");
-        setSizeCode(detail.size_code || "1536x1024");
+        applyImageSettingsFromTask(detail);
         setStyleCode(detail.style_code || "photography");
         await applyTaskDetail(detail, sessionId);
       })
@@ -713,7 +829,7 @@ export default function GenerationWorkbench({
       window.localStorage.removeItem(ACTIVE_TASK_KEY);
       setIsGenerating(false);
       if (message) {
-        addToast(message, "info");
+        addToastRef.current(message, "info");
       }
     };
 
@@ -764,12 +880,32 @@ export default function GenerationWorkbench({
       cancelled = true;
       stopPolling();
     };
-  }, [addToast, isAuthenticated, onGenerationSubmitted, previewUrl, taskNo, taskStatus]);
+  }, [isAuthenticated, previewUrl, taskNo, taskStatus]);
 
   const handleReferenceImageChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     void loadReferenceImageFile(file);
+  };
+
+  const handlePresetRatioSelect = (nextRatio: RatioValue) => {
+    const normalized = normalizeRatio(nextRatio.width, nextRatio.height);
+    setRatio(normalized);
+    setCustomRatioWidth(String(normalized.width));
+    setCustomRatioHeight(String(normalized.height));
+  };
+
+  const handleCustomRatioChange = (field: "width" | "height", value: string) => {
+    const cleaned = value.replace(/\D/g, "").slice(0, 2);
+    const nextWidth = field === "width" ? cleaned : customRatioWidth;
+    const nextHeight = field === "height" ? cleaned : customRatioHeight;
+    setCustomRatioWidth(nextWidth);
+    setCustomRatioHeight(nextHeight);
+    const numericWidth = Number(nextWidth);
+    const numericHeight = Number(nextHeight);
+    if (numericWidth > 0 && numericHeight > 0) {
+      setRatio(normalizeRatio(numericWidth, numericHeight));
+    }
   };
 
   const handleGenerate = async () => {
@@ -778,10 +914,15 @@ export default function GenerationWorkbench({
       addToast("请先填写创作描述", "info");
       return;
     }
+    if (Math.max(ratio.width, ratio.height) / Math.min(ratio.width, ratio.height) > 3) {
+      addToast("自定义比例不能超过 3:1", "error");
+      return;
+    }
     if (generationMode === "image_to_image" && !referenceImageDataUrl && !referenceUploadToken) {
       addToast("请先上传参考图", "info");
       return;
     }
+    const resolvedSizeCode = sizeCodeFromRatio(ratio, resolutionCode);
     const sessionId = beginTaskSession();
     stopPolling();
     pollingAttemptRef.current = 0;
@@ -806,7 +947,8 @@ export default function GenerationWorkbench({
       prompt,
       negative_prompt: negativePrompt,
       style_code: styleCode,
-      size_code: sizeCode,
+      size_code: resolvedSizeCode,
+      quality_code: qualityCode,
       generation_mode: generationMode,
       reference_image_name: referenceImageName,
       reference_image_data_url: "",
@@ -874,7 +1016,7 @@ export default function GenerationWorkbench({
       await applyTaskDetail(detail, sessionId);
       if (isCurrentTaskSession(sessionId) && !detail.images?.length) {
         addToast("生图任务正在执行");
-        onGenerationSubmitted?.();
+        onGenerationSubmittedRef.current?.();
       }
     } catch (error: any) {
       if (!isCurrentTaskSession(sessionId)) return;
@@ -922,7 +1064,10 @@ export default function GenerationWorkbench({
     }
   };
 
-  const activeRatio = ratios.find((item) => item.size === sizeCode) || ratios[0];
+  const sizeCode = sizeCodeFromRatio(ratio, resolutionCode);
+  const activeRatioLabel = formatRatioLabel(ratio);
+  const activeResolutionLabel = resolutionOptions.find((item) => item.value === resolutionCode)?.label || "1K";
+  const activeQualityLabel = qualityOptions.find((item) => item.value === qualityCode)?.label || "自动";
   const currentStyle = styles.find((item) => item.value === styleCode) || styles[0];
   const isSyncingResult = taskStatus === "succeeded" && !previewUrl && !isRestoringTask;
   const hasTerminalState = terminalStatuses.includes(taskStatus);
@@ -1152,22 +1297,84 @@ export default function GenerationWorkbench({
               <div className="mb-2.5 flex items-center justify-between">
                 <div>
                   <div className="text-sm font-black text-gray-950">画面参数</div>
-                  <div className="mt-1 text-xs text-gray-400">{activeRatio.label} · {currentStyle.label}</div>
+                  <div className="mt-1 text-xs text-gray-400">{activeRatioLabel} · {activeResolutionLabel} · {activeQualityLabel} · {sizeCode}</div>
                 </div>
-                <span className="rounded-full bg-gray-50 px-3 py-1 text-[11px] font-bold text-gray-400">稳定出图</span>
+                <span className="rounded-full bg-gray-50 px-3 py-1 text-[11px] font-bold text-gray-400">{currentStyle.label}</span>
               </div>
 
               <div className="space-y-2.5">
                 <div>
                   <div className="mb-2 text-xs font-black text-gray-400">比例</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {ratios.map((item) => (
+                  <div className="grid grid-cols-4 gap-2">
+                    {ratioPresets.map((item) => {
+                      const itemRatio = normalizeRatio(item.width, item.height);
+                      const selected = itemRatio.width === ratio.width && itemRatio.height === ratio.height;
+                      return (
                       <button
-                        key={item.size}
+                        key={item.label}
                         type="button"
-                        onClick={() => setSizeCode(item.size)}
+                        onClick={() => handlePresetRatioSelect(item)}
                         className={`h-9 rounded-2xl text-xs font-black transition ${
-                          item.size === sizeCode
+                          selected
+                            ? "bg-black text-white shadow-lg shadow-black/10"
+                            : "bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-black"
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 rounded-2xl bg-gray-50 p-2">
+                    <span className="shrink-0 px-1 text-[11px] font-black text-gray-400">自定义</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={customRatioWidth}
+                      onChange={(event) => handleCustomRatioChange("width", event.target.value)}
+                      className="h-8 min-w-0 flex-1 rounded-xl border border-gray-100 bg-white px-2 text-center text-xs font-black text-gray-800 outline-none focus:border-black/20"
+                    />
+                    <span className="text-xs font-black text-gray-300">:</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={customRatioHeight}
+                      onChange={(event) => handleCustomRatioChange("height", event.target.value)}
+                      className="h-8 min-w-0 flex-1 rounded-xl border border-gray-100 bg-white px-2 text-center text-xs font-black text-gray-800 outline-none focus:border-black/20"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-2 text-xs font-black text-gray-400">分辨率</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {resolutionOptions.map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => setResolutionCode(item.value as ResolutionCode)}
+                        className={`h-9 rounded-2xl text-xs font-black transition ${
+                          item.value === resolutionCode
+                            ? "bg-black text-white shadow-lg shadow-black/10"
+                            : "bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-black"
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-2 text-xs font-black text-gray-400">质量</div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {qualityOptions.map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => setQualityCode(item.value as QualityCode)}
+                        className={`h-9 rounded-2xl text-xs font-black transition ${
+                          item.value === qualityCode
                             ? "bg-black text-white shadow-lg shadow-black/10"
                             : "bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-black"
                         }`}

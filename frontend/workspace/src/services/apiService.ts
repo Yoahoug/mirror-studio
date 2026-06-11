@@ -64,6 +64,7 @@ export interface GenerationPayload {
   negative_prompt?: string;
   style_code?: string;
   size_code?: string;
+  quality_code?: "auto" | "low" | "medium" | "high";
   generation_mode?: "text_to_image" | "image_to_image";
   reference_image_name?: string;
   reference_image_data_url?: string;
@@ -420,6 +421,7 @@ export interface GenerationTask {
   negative_prompt?: string;
   style_code?: string;
   size_code?: string;
+  quality_code?: "auto" | "low" | "medium" | "high";
   reference_image_name?: string;
   reference_image_attached?: boolean;
   reference_image_data_url?: string;

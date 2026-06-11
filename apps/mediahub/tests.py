@@ -9,18 +9,21 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.conf import settings
+from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from PIL import Image
 
 from apps.generator.models import GenerateTask, GenerationTopic, ImageChannel
 from apps.generator.services import submit_generation_task
 from apps.novelviz.models import NovelSceneImage, NovelUploadedBook, NovelVisualizationTask
-from apps.novelviz.services import reset_task_for_retry
+from apps.novelviz.services import append_task_event, reset_task_for_retry, run_novel_visualization_task
 
 from .models import GeneratedImage, UploadSession
-from .services import expire_temporary_reference_images, expire_upload_sessions
-from .tasks import expire_temporary_reference_images_task, expire_upload_sessions_task
+from .services import cleanup_media_storage, expire_temporary_reference_images, expire_upload_sessions, purge_deleted_image_files
+from .tasks import cleanup_media_storage_task, expire_temporary_reference_images_task, expire_upload_sessions_task
 
 User = get_user_model()
 
@@ -108,6 +111,90 @@ class MediaIsolationTests(TestCase):
 
         preview_image = Image.open(io.BytesIO(preview_response.content))
         self.assertLessEqual(max(preview_image.size), 768)
+
+    @override_settings(IMAGE_PREVIEW_MAX_DIMENSION=320)
+    def test_download_url_preview_uses_configured_max_dimension(self):
+        image = Image.new("RGB", (2048, 1024), color=(48, 92, 210))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+
+        target = Path(self.tempdir.name) / self.image.object_key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(buffer.getvalue())
+        self.client.force_login(self.owner)
+
+        url_response = self.client.post(f"/api/images/{self.image.id}/download-url", secure=True)
+        preview_response = self.client.get(url_response.json()["data"]["preview_url"], secure=True)
+
+        self.assertEqual(preview_response.status_code, 200)
+        preview_image = Image.open(io.BytesIO(preview_response.content))
+        self.assertLessEqual(max(preview_image.size), 320)
+
+    @override_settings(IMAGE_HISTORY_SOFT_DELETE_RETENTION_DAYS=7)
+    def test_purge_deleted_image_files_removes_storage_after_retention(self):
+        old_key = "users/1/tasks/GTEST0001/original-old.png"
+        fresh_key = "users/1/tasks/GTEST0001/original-fresh.png"
+        old_file = Path(self.tempdir.name) / old_key
+        fresh_file = Path(self.tempdir.name) / fresh_key
+        old_file.parent.mkdir(parents=True, exist_ok=True)
+        old_file.write_bytes(b"old")
+        fresh_file.write_bytes(b"fresh")
+
+        self.image.object_key = old_key
+        self.image.status = GeneratedImage.Status.DELETED
+        self.image.deleted_at = timezone.now() - timedelta(days=8)
+        self.image.file_size = 3
+        self.image.save(update_fields=["object_key", "status", "deleted_at", "file_size", "updated_at"])
+        fresh = GeneratedImage.objects.create(
+            task=self.image.task,
+            user=self.owner,
+            image_index=2,
+            storage_provider="local",
+            bucket_name="generated-images",
+            object_key=fresh_key,
+            mime_type="image/png",
+            file_size=5,
+            width=128,
+            height=128,
+            sha256="fresh123",
+            status=GeneratedImage.Status.DELETED,
+            deleted_at=timezone.now() - timedelta(days=1),
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+        self.assertEqual(purge_deleted_image_files(limit=10), 1)
+        self.image.refresh_from_db()
+        fresh.refresh_from_db()
+
+        self.assertFalse(old_file.exists())
+        self.assertEqual(self.image.object_key, "")
+        self.assertEqual(self.image.file_size, 0)
+        self.assertTrue(fresh_file.exists())
+        self.assertEqual(fresh.object_key, fresh_key)
+
+    def test_cleanup_media_storage_returns_category_counts(self):
+        expired_temp = Path(self.tempdir.name) / f"users/{self.owner.id}/tasks/R876543/reference.png"
+        expired_temp.parent.mkdir(parents=True, exist_ok=True)
+        expired_temp.write_bytes(b"temporary reference")
+        expired_timestamp = time.time() - 7200
+        os.utime(expired_temp, (expired_timestamp, expired_timestamp))
+
+        self.image.expires_at = timezone.now() - timedelta(seconds=1)
+        self.image.save(update_fields=["expires_at"])
+
+        result = cleanup_media_storage(limit=10)
+
+        self.assertEqual(result["expired_images"], 1)
+        self.assertEqual(result["temporary_reference_images"], 1)
+        self.assertIn("deleted_image_files", result)
+        self.assertEqual(cleanup_media_storage_task()["expired_images"], 0)
+
+    def test_cleanup_media_storage_command_runs(self):
+        output = io.StringIO()
+
+        call_command("cleanup_media_storage", "--limit=1", stdout=output)
+
+        self.assertIn("cleanup_media_storage", output.getvalue())
 
     def test_expire_temporary_reference_images_only_removes_expired_uploads(self):
         expired_temp = Path(self.tempdir.name) / f"users/{self.owner.id}/tasks/R123456/reference.png"
@@ -433,6 +520,88 @@ class ResumableUploadTests(TestCase):
 
         self.assertEqual(create_response.status_code, 201)
         self.assertEqual(NovelVisualizationTask.objects.get(id=create_response.json()["data"]["id"]).uploaded_book_id, book["uploaded_book_id"])
+
+    def test_novel_task_list_defers_logs(self):
+        self.client.force_login(self.user)
+        task = NovelVisualizationTask.objects.create(
+            user=self.user,
+            book_filename="story.epub",
+            status=NovelVisualizationTask.Status.FAILED,
+            progress_percent=100,
+            logs=[{"id": 1, "type": "task_failed", "payload": {"message": "large log"}, "created_at": "2026-01-01T00:00:00+00:00"}],
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get("/api/novelviz/tasks", secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"][0]["id"], task.id)
+        self.assertEqual(response.json()["data"][0]["logs"], [])
+        novel_task_selects = [
+            query["sql"]
+            for query in queries
+            if 'FROM "novelviz_novelvisualizationtask"' in query["sql"]
+            and "SELECT" in query["sql"].upper()
+        ]
+        self.assertTrue(novel_task_selects)
+        self.assertFalse(any('"novelviz_novelvisualizationtask"."logs"' in sql for sql in novel_task_selects))
+
+    def test_novel_task_event_payload_does_not_nest_logs_inside_task(self):
+        task = NovelVisualizationTask.objects.create(
+            user=self.user,
+            book_filename="story.epub",
+            status=NovelVisualizationTask.Status.QUEUED,
+            progress_percent=1,
+            logs=[{"id": 1, "type": "log", "payload": {"message": "previous"}, "created_at": "2026-01-01T00:00:00+00:00"}],
+            last_event_id=1,
+        )
+        NovelSceneImage.objects.create(
+            task=task,
+            scene_number=1,
+            title="星港初见",
+            chapter="第一章",
+            story_significance="主角进入新世界",
+            excerpt="舱门缓缓打开。",
+            visual_prompt="A cinematic star port opening in front of the hero.",
+            status=NovelSceneImage.Status.SUCCEEDED,
+            image_url="/api/novelviz/tasks/1/images/1",
+        )
+
+        with patch("apps.novelviz.services._run_image_only_retry", return_value=True):
+            run_novel_visualization_task(task.id)
+
+        task = NovelVisualizationTask.objects.get(id=task.id)
+        terminal_event = task.logs[-1]
+        self.assertEqual(terminal_event["type"], "task_done")
+        self.assertEqual(terminal_event["payload"]["task"]["logs"], [])
+
+    @override_settings(NOVELVIZ_EVENT_LOG_LIMIT=2, NOVELVIZ_EVENT_FIELD_MAX_CHARS=32, NOVELVIZ_EVENT_PAYLOAD_MAX_CHARS=1000)
+    def test_novel_task_events_are_limited_and_payload_is_trimmed(self):
+        task = NovelVisualizationTask.objects.create(
+            user=self.user,
+            book_filename="story.epub",
+            status=NovelVisualizationTask.Status.RUNNING,
+            progress_percent=1,
+        )
+
+        append_task_event(task.id, "log", {"message": "first"})
+        append_task_event(task.id, "log", {"message": "second"})
+        append_task_event(
+            task.id,
+            "log",
+            {
+                "message": "x" * 500,
+                "task": {"id": task.id, "logs": [{"payload": "should be removed"}]},
+                "items": [{"text": "y" * 500}],
+            },
+        )
+        task.refresh_from_db()
+
+        self.assertEqual(len(task.logs), 2)
+        self.assertEqual(task.logs[0]["payload"]["message"], "second")
+        self.assertNotIn("logs", task.logs[-1]["payload"]["task"])
+        self.assertIn("[truncated", task.logs[-1]["payload"]["message"])
+        self.assertLess(len(task.logs[-1]["payload"]["message"]), 260)
 
     def test_retry_existing_novel_task_reuses_scene_plan(self):
         task = NovelVisualizationTask.objects.create(

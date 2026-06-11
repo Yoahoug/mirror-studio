@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -257,7 +258,8 @@ def store_uploaded_epub_path(*, source_path: Path, display_name: str, user, sha2
         sha256 = digest.hexdigest()
     relative_path, absolute_path = _uploaded_epub_target_path(display_name=display_name, user=user)
     try:
-        absolute_path.write_bytes(source_path.read_bytes())
+        with source_path.open("rb") as source, absolute_path.open("wb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
         return NovelUploadedBook.objects.create(
             user=user,
             display_name=display_name,
@@ -455,21 +457,78 @@ def request_scene_plan(novel_text: str, channel_code: str = "", *, target_plot: 
     raise NovelVisualizationError(f"AI 场景分析失败：{last_error}")
 
 
+def _novelviz_event_log_limit() -> int:
+    return max(1, int(getattr(settings, "NOVELVIZ_EVENT_LOG_LIMIT", 120) or 120))
+
+
+def _novelviz_event_payload_max_chars() -> int:
+    return max(1000, int(getattr(settings, "NOVELVIZ_EVENT_PAYLOAD_MAX_CHARS", 120_000) or 120_000))
+
+
+def _novelviz_event_field_max_chars() -> int:
+    return max(200, int(getattr(settings, "NOVELVIZ_EVENT_FIELD_MAX_CHARS", 4000) or 4000))
+
+
+def _truncate_event_string(value: str) -> str:
+    max_chars = _novelviz_event_field_max_chars()
+    if len(value) <= max_chars:
+        return value
+    return f"{value[:max_chars]}...[truncated {len(value) - max_chars} chars]"
+
+
+def _sanitize_event_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return _truncate_event_string(value)
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "logs":
+                if item in ([], None):
+                    sanitized["logs"] = []
+                continue
+            sanitized[str(key)[:120]] = _sanitize_event_payload(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_event_payload(item) for item in value[:50]]
+    if isinstance(value, tuple):
+        return [_sanitize_event_payload(item) for item in value[:50]]
+    return value
+
+
+def _fit_event_payload(value: dict[str, Any]) -> dict[str, Any]:
+    payload = _sanitize_event_payload(value if isinstance(value, dict) else {"value": value})
+    max_chars = _novelviz_event_payload_max_chars()
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        payload = {"message": _truncate_event_string(str(value))}
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) <= max_chars:
+        return payload
+    message = str(payload.get("message") or payload.get("error") or "事件内容过大，已裁剪")
+    return {
+        "message": _truncate_event_string(message),
+        "truncated": True,
+        "original_chars": len(encoded),
+    }
+
+
 def append_task_event(task_id: int, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = _fit_event_payload(payload)
     with transaction.atomic():
         task = NovelVisualizationTask.objects.select_for_update().get(pk=task_id)
         task.last_event_id += 1
         event = {
             "id": task.last_event_id,
             "type": event_type,
-            "payload": payload,
+            "payload": safe_payload,
             "created_at": timezone.now().isoformat(),
         }
         logs = list(task.logs or [])
         logs.append(event)
-        task.logs = logs[-500:]
+        task.logs = logs[-_novelviz_event_log_limit():]
         update_fields = ["last_event_id", "logs", "updated_at"]
-        progress = payload.get("progress_percent")
+        progress = safe_payload.get("progress_percent")
         if isinstance(progress, int):
             task.progress_percent = max(0, min(100, progress))
             update_fields.append("progress_percent")
@@ -967,7 +1026,7 @@ def run_novel_visualization_task(task_id: int) -> None:
             {
                 "message": f"任务完成：成功 {succeeded} 张，失败 {failed} 张" if succeeded else error,
                 "progress_percent": 100,
-                "task": serialize_task(NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id)),
+                "task": serialize_task(NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id), include_logs=False),
             },
         )
     except Exception as exc:
@@ -980,7 +1039,7 @@ def run_novel_visualization_task(task_id: int) -> None:
             {
                 "message": message,
                 "progress_percent": 100,
-                "task": serialize_task(NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id)),
+                "task": serialize_task(NovelVisualizationTask.objects.prefetch_related("images").get(pk=task_id), include_logs=False),
             },
         )
     finally:

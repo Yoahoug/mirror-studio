@@ -83,6 +83,7 @@ class GenerateTask(TimeStampedModel):
     negative_prompt = models.TextField("反向提示词", blank=True)
     style_code = models.CharField("风格", max_length=32, default="general")
     size_code = models.CharField("尺寸", max_length=32, default="1024x1024")
+    quality_code = models.CharField("质量", max_length=16, default="auto")
     reference_image_name = models.CharField("参考图文件名", max_length=255, blank=True)
     reference_image_data_url = models.TextField("参考图 Data URL", blank=True)
     reference_storage_provider = models.CharField("参考图存储提供方", max_length=32, blank=True, default="")

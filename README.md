@@ -81,8 +81,6 @@ PROVIDER_MODEL_NAME=gpt-image-2
 PROVIDER_API_KEY=your-api-key
 ```
 
-旧的 `YUNMENG_*` 变量仍有兼容读取，但不再推荐新部署使用。
-
 ### 小说分析 LLM
 
 小说场景分析使用 `LLM_*`：

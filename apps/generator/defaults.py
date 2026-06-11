@@ -52,8 +52,3 @@ def ensure_default_llm_channel() -> ImageChannel | None:
     channel.api_key = settings.LLM_API_KEY
     channel.save(update_fields=["api_key_encrypted", "updated_at"])
     return channel
-
-
-def ensure_default_yunmeng_channel() -> ImageChannel:
-    """兼容旧调用名。"""
-    return ensure_default_image_channel()

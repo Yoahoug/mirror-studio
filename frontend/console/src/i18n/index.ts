@@ -7,7 +7,7 @@ export const translations = {
       about: "关于绘镜",
       engine: "绘镜 Creative Engine",
       tagline: "为您提供极致的 AI 创作体验，释放无限创意潜能。",
-      version: "v1.1",
+      version: "v1.2",
       stable: "2026 Stable"
     },
     header: {
@@ -144,7 +144,7 @@ export const translations = {
       about: "About Mirror Lens",
       engine: "Mirror Lens Creative Engine",
       tagline: "Providing you with the ultimate AI creative experience, unleashing infinite creative potential.",
-      version: "v1.1",
+      version: "v1.2",
       stable: "2026 Stable"
     },
     header: {

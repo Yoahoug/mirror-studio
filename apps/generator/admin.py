@@ -19,6 +19,6 @@ class GenerationTopicAdmin(admin.ModelAdmin):
 
 @admin.register(GenerateTask)
 class GenerateTaskAdmin(admin.ModelAdmin):
-    list_display = ("task_no", "user", "status", "progress_percent", "style_code", "size_code", "channel", "created_at")
-    list_filter = ("status", "style_code", "size_code", "channel")
+    list_display = ("task_no", "user", "status", "progress_percent", "style_code", "size_code", "quality_code", "channel", "created_at")
+    list_filter = ("status", "style_code", "size_code", "quality_code", "channel")
     search_fields = ("task_no", "prompt", "user__username")

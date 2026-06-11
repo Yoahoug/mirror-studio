@@ -99,6 +99,7 @@ def serialize_task(task) -> dict:
         "prompt": task.prompt,
         "style_code": task.style_code,
         "size_code": task.size_code,
+        "quality_code": task.quality_code,
         "channel_name": task.channel.name if getattr(task, "channel", None) else "",
         "quota_cost": task.quota_cost,
         "error_code": task.error_code,
