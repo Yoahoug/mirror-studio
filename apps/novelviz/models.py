@@ -95,6 +95,7 @@ class NovelSceneImage(TimeStampedModel):
     error_message = models.CharField("错误信息", max_length=255, blank=True)
     image_path = models.CharField("图片路径", max_length=500, blank=True)
     image_url = models.CharField("图片 URL", max_length=600, blank=True)
+    preview_image_path = models.CharField("预览图路径", max_length=500, blank=True)
     attempts = models.PositiveSmallIntegerField("尝试次数", default=0)
     finished_at = models.DateTimeField("完成时间", blank=True, null=True)
 

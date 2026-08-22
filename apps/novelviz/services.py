@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 from django.db import close_old_connections, transaction
 from django.utils import timezone
+from PIL import Image, ImageOps
 from ebooklib import ITEM_DOCUMENT, epub
 from requests import exceptions as request_exceptions
 
@@ -811,27 +813,76 @@ def _mark_scene_attempt_failed(scene_id: int, error_message: str) -> tuple[dict[
     return serialize_scene_image(scene), scene.scene_number
 
 
-def _mark_scene_succeeded(scene_id: int, content: bytes, task_id: int) -> dict[str, Any]:
+def _build_scene_preview_files(content: bytes, relative_original: Path) -> tuple[Path, str]:
+    """Generate and persist a lightweight scene preview thumbnail once.
+
+    `relative_original` is the scene file path relative to MEDIA_ROOT. Returns
+    (relative_preview_path, mime) or (None, "image/png") if a preview cannot be
+    produced. Serving a pre-built thumbnail avoids re-reading + resizing the
+    full-resolution scene on every `?preview=1` request in the scene grid.
+    """
+    try:
+        source = Image.open(io.BytesIO(content))
+        source.load()
+        source = ImageOps.exif_transpose(source)
+    except Exception:
+        return None, "image/png"
+
+    max_dimension = max(64, int(getattr(settings, "IMAGE_PREVIEW_MAX_DIMENSION", 768) or 768))
+    longest_edge = max(source.size)
+    if longest_edge > max_dimension:
+        source.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+
+    has_alpha = source.mode in {"RGBA", "LA"} or (source.mode == "P" and "transparency" in source.info)
+    render_mime = "image/png" if has_alpha else "image/jpeg"
+    buffer = io.BytesIO()
+    if has_alpha:
+        source.save(buffer, format="PNG", optimize=True)
+    else:
+        source.convert("RGB").save(
+            buffer,
+            format="JPEG",
+            quality=82,
+            optimize=True,
+            progressive=True,
+        )
+    payload = buffer.getvalue()
+    if not payload:
+        return None, "image/png"
+
+    ext = ".png" if render_mime == "image/png" else ".jpg"
+    relative_preview = relative_original.with_name(relative_original.stem + "-preview" + ext)
+    absolute_preview = Path(settings.MEDIA_ROOT) / relative_preview
+    absolute_preview.parent.mkdir(parents=True, exist_ok=True)
+    absolute_preview.write_bytes(payload)
+    return relative_preview, render_mime
+
+
+def _mark_scene_succeeded(scene_id: int, content: bytes, task_id: int) -> tuple[dict[str, Any], int]:
     scene = _get_scene_for_generation(scene_id)
     relative_path = Path("novelviz") / "users" / str(scene.task.user_id) / "tasks" / str(task_id) / f"scene-{scene.scene_number:02d}.png"
     absolute_path = Path(settings.MEDIA_ROOT) / relative_path
     absolute_path.parent.mkdir(parents=True, exist_ok=True)
     absolute_path.write_bytes(content)
+    preview_path, _preview_mime = _build_scene_preview_files(content, relative_path)
     scene.status = NovelSceneImage.Status.SUCCEEDED
     scene.image_path = str(relative_path)
     scene.image_url = f"/api/novelviz/tasks/{task_id}/images/{scene.id}.png"
+    scene.preview_image_path = str(preview_path) if preview_path else ""
     scene.error_message = ""
     scene.mark_finished()
-    scene.save(update_fields=["status", "image_path", "image_url", "error_message", "finished_at", "updated_at"])
-    return serialize_scene_image(scene)
+    scene.save(
+        update_fields=["status", "image_path", "image_url", "preview_image_path", "error_message", "finished_at", "updated_at"]
+    )
+    return serialize_scene_image(scene), _calculate_image_progress(task_id)
 
 
-def _mark_scene_failed(scene_id: int) -> dict[str, Any]:
+def _mark_scene_failed(scene_id: int) -> tuple[dict[str, Any], int]:
     scene = NovelSceneImage.objects.get(pk=scene_id)
     scene.status = NovelSceneImage.Status.FAILED
     scene.mark_finished()
     scene.save(update_fields=["status", "finished_at", "updated_at"])
-    return serialize_scene_image(scene)
+    return serialize_scene_image(scene), _calculate_image_progress(scene.task_id)
 
 
 def _calculate_image_progress(task_id: int) -> int:
@@ -887,8 +938,7 @@ async def _generate_one_scene(session: aiohttp.ClientSession, semaphore: asyncio
             )
             try:
                 content = await _post_image_generation(session, prompt)
-                scene_payload = await sync_to_async(_mark_scene_succeeded, thread_sensitive=True)(scene_id, content, task_id)
-                progress_percent = await sync_to_async(_calculate_image_progress, thread_sensitive=True)(task_id)
+                scene_payload, progress_percent = await sync_to_async(_mark_scene_succeeded, thread_sensitive=True)(scene_id, content, task_id)
                 await sync_to_async(append_task_event, thread_sensitive=True)(
                     task_id,
                     "image_done",
@@ -920,8 +970,7 @@ async def _generate_one_scene(session: aiohttp.ClientSession, semaphore: asyncio
                 if attempt < max_retries:
                     await asyncio.sleep(min(3 * attempt, 8))
                 continue
-        scene_payload = await sync_to_async(_mark_scene_failed, thread_sensitive=True)(scene_id)
-        progress_percent = await sync_to_async(_calculate_image_progress, thread_sensitive=True)(task_id)
+        scene_payload, progress_percent = await sync_to_async(_mark_scene_failed, thread_sensitive=True)(scene_id)
         await sync_to_async(append_task_event, thread_sensitive=True)(
             task_id,
             "image_failed",
@@ -933,13 +982,28 @@ async def _generate_one_scene(session: aiohttp.ClientSession, semaphore: asyncio
         )
 
 
+def resolve_image_concurrency() -> int:
+    """Resolve how many scene images may be generated concurrently per book.
+
+    Returns a value in [1, 8]. The env knob drives the number; we only clamp the
+    upper bound to protect the upstream provider from unbounded fan-out.
+    """
+    raw = int(settings.NOVELVIZ_IMAGE_CONCURRENCY or 1)
+    return max(1, min(raw, 8))
+
+
 async def _generate_scene_images(task_id: int) -> None:
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=settings.NOVELVIZ_IMAGE_TIMEOUT_SECONDS)
-    concurrency = max(1, min(int(settings.NOVELVIZ_IMAGE_CONCURRENCY), 2))
+    # Respect the configured per-book image concurrency. A dedicated helper keeps
+    # a single source for the resolution and clamps only against a safe ceiling to
+    # avoid hammering the upstream, instead of a fixed/min cap that serialized books.
+    concurrency = resolve_image_concurrency()
     connector = aiohttp.TCPConnector(limit=concurrency)
     semaphore = asyncio.Semaphore(concurrency)
     scene_ids = await sync_to_async(_get_scene_ids, thread_sensitive=True)(task_id)
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+    # trust_env=True lets aiohttp honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY, which is
+    # required on hosts that reach external image providers through a local proxy.
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector, trust_env=True) as session:
         await asyncio.gather(*[_generate_one_scene(session, semaphore, task_id, scene_id) for scene_id in scene_ids])
 
 

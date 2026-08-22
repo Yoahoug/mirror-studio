@@ -13,9 +13,21 @@ class ImageChannel(TimeStampedModel):
         IMAGE = "image", "生图模型"
         LLM = "llm", "LLM模型"
 
+    # Which request dialect / response shape the upstream speaks. OpenAI-compatible
+    # is the default (size + b64_json or url, multipart edits). SiliconFlow Qwen
+    # image models need `image=<base64>` on /images/generations and `image_size`,
+    # and return a remote `url` that must be fetched. Keeping this configurable lets
+    # an operator point a channel at either without code changes.
+    class ProviderVendor(models.TextChoices):
+        OPENAI = "openai", "OpenAI 兼容"
+        SILICONFLOW = "siliconflow", "硅基流动"
+
     name = models.CharField("渠道名称", max_length=64)
     channel_code = models.CharField("渠道编码", max_length=32, unique=True)
     channel_type = models.CharField("模型类型", max_length=16, choices=ChannelType.choices, default=ChannelType.IMAGE)
+    provider_vendor = models.CharField(
+        "对接方言", max_length=24, choices=ProviderVendor.choices, default=ProviderVendor.OPENAI
+    )
     provider_name = models.CharField("对接方", max_length=64, blank=True, default="")
     base_url = models.URLField("基础地址")
     api_path = models.CharField("接口路径", max_length=128, default="/images/generations")

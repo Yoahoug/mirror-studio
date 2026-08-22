@@ -36,6 +36,7 @@ class GeneratedImage(TimeStampedModel):
     storage_provider = models.CharField("存储提供方", max_length=32, default="minio")
     bucket_name = models.CharField("桶名", max_length=128)
     object_key = models.CharField("对象 Key", max_length=255)
+    preview_object_key = models.CharField("预览图对象 Key", max_length=255, blank=True, default="")
     mime_type = models.CharField("MIME", max_length=64, default="image/png")
     file_size = models.PositiveIntegerField("文件大小", default=0)
     width = models.PositiveIntegerField("宽", default=0)

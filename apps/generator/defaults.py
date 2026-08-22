@@ -8,11 +8,18 @@ from .models import ImageChannel
 def ensure_default_image_channel() -> ImageChannel:
     """确保默认生图渠道为通用图片渠道，优先使用 OpenAI 兼容接口配置。"""
     channel_code = getattr(settings, "DEFAULT_CHANNEL_CODE", "default") or "default"
+    vendor_code = (getattr(settings, "PROVIDER_VENDOR_CODE", "openai") or "openai").strip().lower()
+    vendor_choice = (
+        ImageChannel.ProviderVendor.SILICONFLOW
+        if vendor_code == "siliconflow"
+        else ImageChannel.ProviderVendor.OPENAI
+    )
     channel, _ = ImageChannel.objects.update_or_create(
         channel_code=channel_code,
         defaults={
             "name": settings.PROVIDER_NAME,
             "channel_type": ImageChannel.ChannelType.IMAGE,
+            "provider_vendor": vendor_choice,
             "provider_name": settings.PROVIDER_VENDOR,
             "base_url": settings.PROVIDER_BASE_URL,
             "api_path": settings.PROVIDER_API_PATH,

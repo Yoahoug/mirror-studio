@@ -222,11 +222,20 @@ class NovelTaskEventsView(LoginRequiredMixin, View):
             nonlocal last_seen_id
             heartbeat_at = time.monotonic()
             while True:
-                current = NovelVisualizationTask.objects.filter(id=task.id, user=request.user).first()
+                # Slim projection for the hot poll loop: only status, logs tail and
+                # last_event_id are needed, avoiding materializing the full row/logs
+                # JSON for every client every (sub-)second.
+                current = (
+                    NovelVisualizationTask.objects.filter(id=task.id, user=request.user)
+                    .values("status", "last_event_id", "logs")
+                    .first()
+                )
                 if not current:
                     yield "event: task_failed\ndata: {\"message\":\"任务不存在\"}\n\n"
                     return
-                logs = list(current.logs or [])
+                logs = list(current.get("logs") or [])
+                status = current.get("status")
+                current_last_event_id = int(current.get("last_event_id") or 0)
                 for event in logs:
                     event_id = int(event.get("id") or 0)
                     if event_id <= last_seen_id:
@@ -236,11 +245,11 @@ class NovelTaskEventsView(LoginRequiredMixin, View):
                     payload = event.get("payload") or {}
                     yield f"id: {event_id}\nevent: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-                if current.status in {
+                if status in {
                     NovelVisualizationTask.Status.SUCCEEDED,
                     NovelVisualizationTask.Status.FAILED,
                     NovelVisualizationTask.Status.CANCELED,
-                } and last_seen_id >= current.last_event_id:
+                } and last_seen_id >= current_last_event_id:
                     return
 
                 if time.monotonic() - heartbeat_at >= 15:
@@ -276,6 +285,17 @@ class NovelSceneImageView(LoginRequiredMixin, View):
         inline = not download or request.GET.get("disposition") == "inline" or preview
         filename = _scene_filename(image)
         if preview:
+            # Fast path: serve the pre-built thumbnail generated at scene-success
+            # time (avoids re-reading + resizing the full scene on every request).
+            preview_rel = (getattr(image, "preview_image_path", "") or "").strip()
+            if preview_rel:
+                preview_abs = (media_root / preview_rel).resolve()
+                if preview_abs.exists() and media_root in preview_abs.parents:
+                    content_type = "image/jpeg" if preview_abs.suffix.lower() == ".jpg" else "image/png"
+                    response = FileResponse(preview_abs.open("rb"), content_type=content_type)
+                    response["Cache-Control"] = "private, max-age=86400, immutable"
+                    response["Content-Disposition"] = _content_disposition(filename, inline=inline)
+                    return response
             content, content_type = _build_scene_preview_content(image_path)
             response = HttpResponse(content, content_type=content_type)
         else:

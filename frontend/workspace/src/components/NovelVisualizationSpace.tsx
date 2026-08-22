@@ -574,6 +574,9 @@ export default function NovelVisualizationSpace({
 
   useEffect(() => {
     if (!isAuthenticated || !activeTask?.id || terminalStatuses.includes(activeTask.status)) return;
+    // When SSE is connected, the live stream already pushes events; only poll as a
+    // fallback so we don't duplicate the task snapshot traffic on every tick.
+    if (connected) return;
     let stopped = false;
     const taskId = activeTask.id;
 
@@ -596,7 +599,7 @@ export default function NovelVisualizationSpace({
       }
     };
 
-    const interval = window.setInterval(syncTaskSnapshot, connected ? 10000 : 4000);
+    const interval = window.setInterval(syncTaskSnapshot, 6000);
     return () => {
       stopped = true;
       window.clearInterval(interval);
@@ -1000,7 +1003,7 @@ export default function NovelVisualizationSpace({
                                 className="block h-full w-full cursor-zoom-in overflow-hidden text-left"
                                 aria-label={`放大查看 ${scene.title}`}
                               >
-                                <img src={scenePreviewUrl(scene)} alt={scene.title} loading="lazy" className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />
+                                <img src={scenePreviewUrl(scene)} alt={scene.title} loading="lazy" decoding="async" fetchPriority="low" className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />
                               </button>
                               <a
                                 href={sceneDownloadUrl(scene)}

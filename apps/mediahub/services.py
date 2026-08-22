@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import ipaddress
+import logging
 import mimetypes
 import re
 import shutil
@@ -13,15 +14,17 @@ from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 from django.conf import settings
-from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+from django.core.signing import BadSignature, SignatureExpired, Signer, TimestampSigner
 from django.db import transaction
 from django.http import Http404, HttpResponse
 from django.utils import timezone
 from minio import Minio
 
 from .models import GeneratedImage, UploadSession
+
+logger = logging.getLogger(__name__)
 
 
 TEMPORARY_REFERENCE_OBJECT_KEY_RE = re.compile(r"^users/\d+/tasks/R[^/]+/reference(?:\.[^/]+)?$")
@@ -497,15 +500,72 @@ def expire_upload_sessions(limit: int = 100) -> int:
     return len(expired)
 
 
+def _build_and_store_preview(*, user_id: int, task_no: str, image_index: int, content: bytes, mime_type: str) -> str:
+    """Generate a lightweight JPEG thumbnail once and store it as its own object.
+
+    Returns the preview object key ("" if it could not be produced). The thumbnail
+    is derived from the source once at storage time so that every subsequent
+    `?preview=1` request serves a cached file instead of decoding + re-encoding the
+    full-resolution image through Pillow on the request thread.
+    """
+    try:
+        max_dimension = int(getattr(settings, "IMAGE_PREVIEW_MAX_DIMENSION", 768) or 768)
+        source = Image.open(io.BytesIO(content))
+        source.load()
+        source = ImageOps.exif_transpose(source)
+    except Exception:
+        # Some upstream payloads are not decodable as an image (e.g. a mock or an
+        # already-corrupt response). Benign fallback — the original is still served.
+        logger.warning("preview open skipped len=%s", len(content or b""))
+        return ""
+    width, height = source.size
+    longest_edge = max(width, height)
+    if longest_edge > max_dimension:
+        source.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+    has_alpha = source.mode in {"RGBA", "LA"} or (source.mode == "P" and "transparency" in source.info)
+    render_mime = "image/png" if has_alpha else "image/jpeg"
+    buffer = io.BytesIO()
+    if has_alpha:
+        # PNG is lossless; keep it small via palette/flattening where sensible.
+        source.save(buffer, format="PNG", optimize=True)
+    else:
+        source.convert("RGB").save(
+            buffer,
+            format="JPEG",
+            quality=80,
+            optimize=True,
+            progressive=True,
+        )
+    preview_content = buffer.getvalue()
+    if not preview_content:
+        logger.error("preview encode produced empty content mode=%s", source.mode)
+        return ""
+    preview_key = f"users/{user_id}/tasks/{task_no}/preview-{image_index}{mimetypes.guess_extension(render_mime) or '.jpg'}"
+    try:
+        _write_storage_object(object_key=preview_key, content=preview_content, mime_type=render_mime)
+    except Exception:
+        logger.exception("preview thumbnail store failed task_no=%s", task_no)
+        return ""
+    return preview_key
+
+
 def store_generated_image(*, user_id: int, task_no: str, image_index: int, content: bytes, mime_type: str) -> dict:
     object_key = _object_key(user_id, task_no, image_index, mime_type)
     width, height = _image_dimensions(content)
     _write_storage_object(object_key=object_key, content=content, mime_type=mime_type)
+    preview_object_key = _build_and_store_preview(
+        user_id=user_id,
+        task_no=task_no,
+        image_index=image_index,
+        content=content,
+        mime_type=mime_type,
+    )
     return {
         "image_index": image_index,
         "storage_provider": _storage_mode(),
         "bucket_name": settings.MINIO_BUCKET,
         "object_key": object_key,
+        "preview_object_key": preview_object_key,
         "mime_type": mime_type,
         "file_size": len(content),
         "width": width,
@@ -570,9 +630,7 @@ def expire_temporary_reference_images(limit: int = 100) -> int:
 def fetch_remote_image(url: str) -> tuple[bytes, str]:
     with _open_remote_image_stream(url) as response:
         response.raise_for_status()
-        content_type = response.headers.get("Content-Type", "image/png").split(";", 1)[0].strip().lower()
-        if not (content_type.startswith("image/") or content_type == "application/octet-stream"):
-            raise ValueError("远程地址未返回图片内容")
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         max_bytes = settings.MAX_REMOTE_IMAGE_BYTES
         chunks = []
         total = 0
@@ -583,7 +641,37 @@ def fetch_remote_image(url: str) -> tuple[bytes, str]:
             if total > max_bytes:
                 raise ValueError("远程图片超过大小限制")
             chunks.append(chunk)
-        return b"".join(chunks), content_type or "image/png"
+        content = b"".join(chunks)
+        # The upstream CDN (e.g. SiliconFlow S3) often returns a generic
+        # application/octet-stream even for PNG results. Sniff the real format.
+        sniffed = _sniff_image_mime(content)
+        if sniffed:
+            content_type = sniffed
+        if not (content_type or "").startswith("image/"):
+            raise ValueError("远程地址未返回图片内容")
+        return content, content_type or "image/png"
+
+
+def _sniff_image_mime(content: bytes) -> str:
+    """Detect common image mime from a byte prefix; '' if unrecognized."""
+    if not content:
+        return ""
+    head = content[:16]
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head[0:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    try:
+        import io as _io
+        from PIL import Image as _PILImage
+
+        im = _PILImage.open(_io.BytesIO(content))
+        fmt = (im.format or "").lower()
+        return {"png": "image/png", "jpeg": "image/jpeg", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}.get(fmt, "")
+    except Exception:
+        return ""
 
 
 def read_image_bytes(image: GeneratedImage) -> bytes:
@@ -593,8 +681,17 @@ def read_image_bytes(image: GeneratedImage) -> bytes:
 
 
 def issue_download_url(*, image: GeneratedImage, user, inline: bool = False, preview: bool = False) -> str:
-    signer = TimestampSigner()
-    token = signer.sign(f"{image.id}:{user.id}")
+    if preview:
+        # Preview tokens are intentionally STABLE for a given image version: embed
+        # the image's updated_at so the URL stays identical across list re-renders
+        # until the preview is regenerated. That lets the browser HTTP cache the
+        # thumbnail instead of re-requesting it on every gallery load.
+        signer = Signer(salt=settings.SECRET_KEY + ":mediahub-preview")
+        identity = f"p:{image.id}:{user.id}:{image.updated_at.timestamp():.0f}"
+        token = signer.sign(identity)
+    else:
+        signer = TimestampSigner()
+        token = signer.sign(f"{image.id}:{user.id}")
     query = []
     if inline:
         query.append("disposition=inline")
@@ -605,12 +702,20 @@ def issue_download_url(*, image: GeneratedImage, user, inline: bool = False, pre
 
 
 def resolve_download_token(token: str, max_age: int = 300) -> GeneratedImage:
-    signer = TimestampSigner()
+    # Try the stable preview signature first; fall back to the timestamped one.
+    preview_signer = Signer(salt=settings.SECRET_KEY + ":mediahub-preview")
     try:
-        value = signer.unsign(token, max_age=max_age)
-    except (BadSignature, SignatureExpired) as exc:
-        raise Http404("下载链接已失效") from exc
-    image_id, user_id = value.split(":")
+        value = preview_signer.unsign(token)
+        prefix, image_id, user_id, _updated_at = value.split(":", 3)
+        if prefix != "p":
+            raise BadSignature("not preview token")
+    except (BadSignature, SignatureExpired, ValueError):
+        signer = TimestampSigner()
+        try:
+            value = signer.unsign(token, max_age=max_age)
+        except (BadSignature, SignatureExpired) as exc:
+            raise Http404("下载链接已失效") from exc
+        image_id, user_id = value.split(":")
     image = GeneratedImage.objects.filter(id=image_id, user_id=user_id, task__is_deleted=False).select_related("user", "task").first()
     if not image:
         raise Http404("图片不存在")
@@ -625,8 +730,29 @@ def _download_filename(image: GeneratedImage) -> str:
     return f"{stem}{extension}"
 
 
+def _serve_preview_object(image: GeneratedImage) -> tuple[bytes, str] | None:
+    """Return (content, mime) for a pre-built preview if it exists on storage."""
+    preview_key = (getattr(image, "preview_object_key", "") or "").strip()
+    if not preview_key:
+        return None
+    try:
+        preview_content = read_storage_object(bucket_name=image.bucket_name, object_key=preview_key)
+    except Exception:
+        return None
+    if not preview_content:
+        return None
+    preview_mime = "image/jpeg" if preview_key.endswith(".jpg") else "image/png"
+    return preview_content, preview_mime
+
+
 def _build_preview_content(image: GeneratedImage, *, max_dimension: int = 768) -> tuple[bytes, str]:
     max_dimension = max(64, int(getattr(settings, "IMAGE_PREVIEW_MAX_DIMENSION", max_dimension) or max_dimension))
+    # Fast path: serve the cached thumbnail that was generated at storage time.
+    cached = _serve_preview_object(image)
+    if cached:
+        return cached
+    # Fallback: build on demand (usually only for legacy rows without a preview),
+    # then persist the thumbnail so the next request takes the fast path too.
     content = read_image_bytes(image)
     try:
         rendered = Image.open(io.BytesIO(content))
@@ -643,16 +769,27 @@ def _build_preview_content(image: GeneratedImage, *, max_dimension: int = 768) -
     buffer = io.BytesIO()
     if has_alpha:
         rendered.save(buffer, format="PNG", optimize=True)
-        return buffer.getvalue(), "image/png"
-
-    rendered.convert("RGB").save(
-        buffer,
-        format="JPEG",
-        quality=82,
-        optimize=True,
-        progressive=True,
-    )
-    return buffer.getvalue(), "image/jpeg"
+        render_mime = "image/png"
+    else:
+        rendered.convert("RGB").save(
+            buffer,
+            format="JPEG",
+            quality=82,
+            optimize=True,
+            progressive=True,
+        )
+        render_mime = "image/jpeg"
+    payload = buffer.getvalue()
+    # Persist for future requests (best-effort; failure only means next request rebuilds).
+    try:
+        preview_key = f"users/{image.user_id}/tasks/{image.task_id}/preview-{image.image_index}{mimetypes.guess_extension(render_mime) or '.jpg'}"
+        _write_storage_object(object_key=preview_key, content=payload, mime_type=render_mime)
+        if image.preview_object_key != preview_key:
+            image.preview_object_key = preview_key
+            image.save(update_fields=["preview_object_key", "updated_at"])
+    except Exception:
+        logger.warning("preview lazy-backfill failed image_id=%s", image.id)
+    return payload, render_mime
 
 
 def build_download_response(image: GeneratedImage, *, inline: bool = False, preview: bool = False) -> HttpResponse:
@@ -664,6 +801,15 @@ def build_download_response(image: GeneratedImage, *, inline: bool = False, prev
         f'{disposition}; filename="generated-image{mimetypes.guess_extension(content_type) or Path(filename).suffix or ".png"}"; '
         f"filename*=UTF-8''{quote(filename)}"
     )
+    # Preview URLs are stable per image version, so let the browser cache them
+    # aggressively; originals get modest private caching. This removes the
+    # repeated thumbnail re-encode from the request path entirely (the main
+    # source of "卡" in the gallery).
+    if preview:
+        response["Cache-Control"] = "private, max-age=86400, immutable"
+        response["X-Content-Type-Options"] = "nosniff"
+    else:
+        response["Cache-Control"] = "private, max-age=300"
     return response
 
 
@@ -671,6 +817,8 @@ def expire_image(image: GeneratedImage) -> None:
     if image.status != GeneratedImage.Status.AVAILABLE:
         return
     delete_storage_object(bucket_name=image.bucket_name, object_key=image.object_key)
+    if getattr(image, "preview_object_key", ""):
+        delete_storage_object(bucket_name=image.bucket_name, object_key=image.preview_object_key)
     image.status = GeneratedImage.Status.EXPIRED
     image.deleted_at = timezone.now()
     image.save(update_fields=["status", "deleted_at", "updated_at"])
@@ -700,9 +848,12 @@ def purge_deleted_image_files(limit: int = 100) -> int:
     purged = 0
     for image in images:
         delete_storage_object(bucket_name=image.bucket_name, object_key=image.object_key)
+        if getattr(image, "preview_object_key", ""):
+            delete_storage_object(bucket_name=image.bucket_name, object_key=image.preview_object_key)
         image.object_key = ""
+        image.preview_object_key = ""
         image.file_size = 0
-        image.save(update_fields=["object_key", "file_size", "updated_at"])
+        image.save(update_fields=["object_key", "preview_object_key", "file_size", "updated_at"])
         purged += 1
     return purged
 

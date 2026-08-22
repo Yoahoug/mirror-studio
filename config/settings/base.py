@@ -129,7 +129,11 @@ RISK_TASK_LIMIT_PER_WINDOW = env_int("RISK_TASK_LIMIT_PER_WINDOW", 10)
 CONSOLE_HMAC_ENABLED = env_bool("CONSOLE_HMAC_ENABLED", False)
 CONSOLE_API_RATE_LIMIT = env_int("CONSOLE_API_RATE_LIMIT", 60)
 TRUST_X_FORWARDED_FOR = env_bool("TRUST_X_FORWARDED_FOR", False)
-REMOTE_IMAGE_ALLOWED_HOSTS = env_list("REMOTE_IMAGE_ALLOWED_HOSTS", [])
+# Remote image URLs are SSRF-checked. The default includes SiliconFlow's S3 CDN,
+# whose DNS resolves into the 198.18.0.0/15 benchmarking range that many SSRF
+# guards (including ours) treat as non-global, causing false blocks on the result
+# images returned by Qwen image models. Operators can extend or override this list.
+REMOTE_IMAGE_ALLOWED_HOSTS = env_list("REMOTE_IMAGE_ALLOWED_HOSTS", ["s3.siliconflow.cn"])
 MAX_REMOTE_IMAGE_BYTES = env_int("MAX_REMOTE_IMAGE_BYTES", 25 * 1024 * 1024)
 MAX_REFERENCE_IMAGE_BYTES = env_int("MAX_REFERENCE_IMAGE_BYTES", 10 * 1024 * 1024)
 FILE_UPLOAD_MAX_MEMORY_SIZE = env_int(
@@ -140,7 +144,7 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = env_int(
     "DATA_UPLOAD_MAX_MEMORY_SIZE",
     4 * 1024 * 1024,
 )
-RESUMABLE_UPLOAD_CHUNK_SIZE = env_int("RESUMABLE_UPLOAD_CHUNK_SIZE", 256 * 1024)
+RESUMABLE_UPLOAD_CHUNK_SIZE = env_int("RESUMABLE_UPLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
 RESUMABLE_UPLOAD_SESSION_TTL_SECONDS = env_int("RESUMABLE_UPLOAD_SESSION_TTL_SECONDS", 24 * 60 * 60)
 RELEASE_PUSH_KEY = env("RELEASE_PUSH_KEY", "") or ""
 RELEASE_PUSH_SECRET = env("RELEASE_PUSH_SECRET", "") or ""
@@ -149,6 +153,9 @@ RELEASE_PUSH_MAX_AGE_SECONDS = env_int("RELEASE_PUSH_MAX_AGE_SECONDS", 300)
 DEFAULT_CHANNEL_CODE = env("DEFAULT_CHANNEL_CODE", "default") or "default"
 PROVIDER_NAME = env("PROVIDER_NAME", "默认图片渠道") or "默认图片渠道"
 PROVIDER_VENDOR = env("PROVIDER_VENDOR", "OpenAI-Compatible") or "OpenAI-Compatible"
+# Request dialect for the default image channel: "openai" (OpenAI-compatible) or
+# "siliconflow" (硅基流动 Qwen image models). Drives ImageChannel.provider_vendor.
+PROVIDER_VENDOR_CODE = (env("PROVIDER_VENDOR_CODE", "openai") or "openai").strip().lower()
 PROVIDER_BASE_URL = env("PROVIDER_BASE_URL", "http://127.0.0.1:8080") or ""
 PROVIDER_API_PATH = env("PROVIDER_API_PATH", "/v1/images/generations") or "/v1/images/generations"
 PROVIDER_MODEL_NAME = env("PROVIDER_MODEL_NAME", "gpt-image-2") or "gpt-image-2"
@@ -159,6 +166,9 @@ OPENAI_IMAGE_EDIT_TIMEOUT_SECONDS = env_int("OPENAI_IMAGE_EDIT_TIMEOUT_SECONDS",
 MOCK_PROVIDER_ENABLED = env_bool("MOCK_PROVIDER_ENABLED", True)
 GENERATION_TASKS_RUN_INLINE = env_bool("GENERATION_TASKS_RUN_INLINE", False)
 GENERATION_WORKER_POLL_SECONDS = env_int("GENERATION_WORKER_POLL_SECONDS", 2)
+# How many tasks the generation worker processes concurrently. Raising this lets
+# multiple image requests hit the upstream in parallel instead of one-at-a-time.
+GENERATION_WORKER_CONCURRENCY = env_int("GENERATION_WORKER_CONCURRENCY", 4)
 
 LLM_CHANNEL_CODE = env("LLM_CHANNEL_CODE", "default-llm") or "default-llm"
 LLM_PROVIDER_NAME = env("LLM_PROVIDER_NAME", "默认 LLM 渠道") or "默认 LLM 渠道"
@@ -314,7 +324,7 @@ NOVELVIZ_IMAGE_SIZE = env("NOVELVIZ_IMAGE_SIZE", "1024x1024") or "1024x1024"
 NOVELVIZ_IMAGE_QUALITY = env("NOVELVIZ_IMAGE_QUALITY", "high") or "high"
 NOVELVIZ_IMAGE_TIMEOUT_SECONDS = env_int("NOVELVIZ_IMAGE_TIMEOUT_SECONDS", PROVIDER_TIMEOUT_SECONDS)
 NOVELVIZ_IMAGE_MAX_RETRIES = env_int("NOVELVIZ_IMAGE_MAX_RETRIES", PROVIDER_MAX_RETRIES)
-NOVELVIZ_IMAGE_CONCURRENCY = env_int("NOVELVIZ_IMAGE_CONCURRENCY", 1)
+NOVELVIZ_IMAGE_CONCURRENCY = env_int("NOVELVIZ_IMAGE_CONCURRENCY", 3)
 NOVELVIZ_MAX_SCENES = env_int("NOVELVIZ_MAX_SCENES", 10)
 NOVELVIZ_QUOTA_COST_PER_BOOK = env_int("NOVELVIZ_QUOTA_COST_PER_BOOK", 0)
 NOVELVIZ_RUN_INLINE = env_bool("NOVELVIZ_RUN_INLINE", False)

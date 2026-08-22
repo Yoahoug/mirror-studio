@@ -487,7 +487,7 @@ class GeneratorFlowTests(TestCase):
                 return self.payload
 
         with patch(
-            "apps.generator.providers.requests.post",
+            "requests.sessions.Session.post",
             side_effect=[
                 DummyResponse({"error": {"message": "temporary 500"}}, 500),
                 DummyResponse({"error": {"message": "temporary 502"}}, 502),
@@ -544,7 +544,7 @@ class GeneratorFlowTests(TestCase):
                     "size": "1024x1024",
                 }
 
-        with patch("apps.generator.providers.requests.post", return_value=DummyResponse()) as mock_post:
+        with patch("requests.sessions.Session.post", return_value=DummyResponse()) as mock_post:
             generate_image_task(task.task_no)
 
         task.refresh_from_db()
@@ -601,7 +601,7 @@ class GeneratorFlowTests(TestCase):
                     "data": [{"b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAY0lEQVR4nO3PQQ0AIBDAsAP/nuGNAvZoFSzZOjNnyNi/A3gV0AqoFVAroFZAraBaAbUCagXUCqgVUCugVkCtgFoBtQJqBdQKqBVQK6BWQK2AWgG1AmoF1AqoFVAroFbwA5wBgrQMzDIAAAAASUVORK5CYII="}],
                 }
 
-        with patch("apps.generator.providers.requests.post", return_value=DummyResponse()) as mock_post:
+        with patch("requests.sessions.Session.post", return_value=DummyResponse()) as mock_post:
             generate_image_task(task.task_no)
 
         called_url = mock_post.call_args.args[0]

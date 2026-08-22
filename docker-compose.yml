@@ -45,9 +45,14 @@ services:
       GUNICORN_KEEPALIVE: ${GUNICORN_KEEPALIVE:-10}
       GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-800}
       GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:-80}
-      RESUMABLE_UPLOAD_CHUNK_SIZE: ${RESUMABLE_UPLOAD_CHUNK_SIZE:-262144}
+      RESUMABLE_UPLOAD_CHUNK_SIZE: ${RESUMABLE_UPLOAD_CHUNK_SIZE:-8388608}
+      HTTP_PROXY: ${EXTERNAL_HTTP_PROXY:-}
+      HTTPS_PROXY: ${EXTERNAL_HTTP_PROXY:-}
+      NO_PROXY: ${EXTERNAL_NO_PROXY:-localhost,127.0.0.1,postgres,172.0.0.1,host.docker.internal}
     depends_on:
       - postgres
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - media_data:/app/media
       - static_volume:/app/staticfiles
@@ -71,9 +76,15 @@ services:
       ALLOW_INSECURE_PROD: ${ALLOW_INSECURE_PROD:-0}
       GENERATION_TASKS_RUN_INLINE: ${GENERATION_TASKS_RUN_INLINE:-0}
       GENERATION_WORKER_POLL_SECONDS: ${GENERATION_WORKER_POLL_SECONDS:-2}
+      GENERATION_WORKER_CONCURRENCY: ${GENERATION_WORKER_CONCURRENCY:-4}
+      HTTP_PROXY: ${EXTERNAL_HTTP_PROXY:-}
+      HTTPS_PROXY: ${EXTERNAL_HTTP_PROXY:-}
+      NO_PROXY: ${EXTERNAL_NO_PROXY:-localhost,127.0.0.1,postgres,172.0.0.1,host.docker.internal}
     depends_on:
       - postgres
       - web
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - media_data:/app/media
 

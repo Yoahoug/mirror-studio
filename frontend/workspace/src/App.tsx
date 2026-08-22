@@ -264,7 +264,7 @@ export default function App() {
         <div
           className="flex-1 overflow-x-hidden overflow-y-auto scroll-smooth transition-colors duration-300"
         >
-          <AnimatePresence mode="wait">
+          <AnimatePresence initial={false}>
             {activeTab === 'history' ? (
               <HistorySpace
                 key="history"

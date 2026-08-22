@@ -73,6 +73,23 @@ function isActiveStatus(status: string) {
   return ["queued", "running"].includes(status);
 }
 
+function taskSignature(task: GenerationTask): string {
+  // Compact invariant used to detect real changes during silent polling. Stable
+  // preview URLs mean unchanged tasks produce identical signatures, so the grid
+  // keeps its rendered identity (and browser-cached thumbnails) between polls.
+  const imgs = (task.images || []).map((i) => `${i.id}:${i.status}:${i.preview_url || i.image_url || ""}`).join("|");
+  return `${task.task_no}:${task.status}:${task.progress_percent}:${imgs}`;
+}
+
+function sameTaskList(a: GenerationTask[], b: GenerationTask[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (taskSignature(a[i]) !== taskSignature(b[i])) return false;
+  }
+  return true;
+}
+
 function isRetryableNovelTask(task: GenerationTask) {
   return isNovelTask(task) && ["failed", "canceled"].includes(task.status) && Boolean(task.novel_task_id);
 }
@@ -240,6 +257,8 @@ function HistoryModals({
                               src={galleryImagePreviewUrl(image)}
                               alt={image.title || gallery.prompt}
                               loading="lazy"
+                              decoding="async"
+                              fetchPriority="low"
                               className="h-full w-full object-cover transition duration-300 hover:scale-[1.03]"
                             />
                           </button>
@@ -378,7 +397,15 @@ export default function HistorySpace({
     else if (page > 1) setLoadingMore(true);
     try {
       const result = await fetchTasks({ page, pageSize: 18, query: debouncedQuery });
-      setTasks((current) => page === 1 ? result.items : [...current, ...result.items]);
+      setTasks((current) => {
+        if (page === 1) {
+          // Preserve array identity when nothing meaningful changed, so the grid
+          // doesn't re-render / re-run entrance animations on every silent poll.
+          if (silent && sameTaskList(current, result.items)) return current;
+          return result.items;
+        }
+        return [...current, ...result.items];
+      });
       setPagination(result.pagination);
     } catch (error: any) {
       if (error instanceof AuthRequiredError) return;
@@ -429,9 +456,12 @@ export default function HistorySpace({
   useEffect(() => {
     if (!tasks.some((task) => isActiveStatus(task.status))) return;
 
+    // Poll less aggressively than before: tasks are updated via the
+    // `mirror:task-updated` event on completion, and preview URLs are now stable
+    // cacheable keys, so a slower poll is enough to refresh progress.
     const timer = window.setInterval(() => {
       loadTasks(1, { silent: true });
-    }, 4000);
+    }, 8000);
 
     return () => window.clearInterval(timer);
   }, [debouncedQuery, tasks.some((task) => isActiveStatus(task.status))]);
@@ -691,6 +721,8 @@ export default function HistorySpace({
                             src={previewUrl}
                             alt={task.prompt || task.task_no}
                             loading="lazy"
+                            decoding="async"
+                            fetchPriority="low"
                             className="h-full w-full object-cover"
                           />
                         ) : (

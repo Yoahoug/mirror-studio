@@ -4,6 +4,7 @@ import base64
 import io
 import logging
 import textwrap
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,10 +12,36 @@ import requests
 from PIL import Image, ImageDraw, ImageOps
 from django.conf import settings
 
-from .models import GenerateTask
+from .models import GenerateTask, ImageChannel
 from apps.mediahub.services import read_storage_object
 
 logger = logging.getLogger(__name__)
+
+# Thread-local keep-alive sessions. Each worker thread gets its own requests
+# Session (requests.Session is not thread-safe), but every session shares the
+# same underlying urllib3 connection pool settings, so a single thread reuses
+# its connections across back-to-back generations and multiple worker threads
+# can hit the upstream concurrently without connection churn or TTL handshakes.
+_PROVIDER_POOL_CONNECTIONS = 16
+_PROVIDER_POOL_MAXSIZE = 64
+
+_thread_local = threading.local()
+
+
+def _provider_session() -> requests.Session:
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=_PROVIDER_POOL_CONNECTIONS,
+            pool_maxsize=_PROVIDER_POOL_MAXSIZE,
+            max_retries=0,
+            pool_block=False,
+        )
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _thread_local.session = session
+    return session
 
 
 @dataclass
@@ -116,24 +143,27 @@ def _resize_image_to_limit(image: Image.Image, max_dimension: int) -> Image.Imag
 
 
 def _save_png_with_limit(image: Image.Image, max_bytes: int, max_dimension: int) -> tuple[bytes, str, str]:
+    # Resize once to the target dimension then encode; PNG is lossless so only the
+    # dimensions (cheap rescale, not repeated full-size encodes) trade size.
     current = _resize_image_to_limit(image, max_dimension)
-    smallest_payload = b""
     for dimension_limit in [max_dimension, 1344, 1024, 768, 512]:
-        current = _resize_image_to_limit(current, dimension_limit)
         buffer = io.BytesIO()
         current.save(buffer, format="PNG", optimize=True)
         payload = buffer.getvalue()
-        if not smallest_payload or len(payload) < len(smallest_payload):
-            smallest_payload = payload
         if len(payload) <= max_bytes:
             return payload, "image/png", ".png"
-    return smallest_payload, "image/png", ".png"
+        current = _resize_image_to_limit(current, dimension_limit)
+    # Last iteration above is still too big; return the smallest produced.
+    return payload, "image/png", ".png"
 
 
 def _save_jpeg_with_limit(image: Image.Image, max_bytes: int, max_dimension: int) -> tuple[bytes, str, str]:
+    # Fast path: single resize to the max dimension, then try quality levels (the
+    # encode dominates cost, and re-scaling the already-limited image is wasteful).
+    # Only step the dimension down if even the lowest quality exceeds the budget.
+    candidate = _resize_image_to_limit(image, max_dimension).convert("RGB")
     smallest_payload = b""
-    for dimension_limit in [max_dimension, 1536, 1344, 1152, 1024, 896, 768]:
-        candidate = _resize_image_to_limit(image, dimension_limit).convert("RGB")
+    for dimension_limit in [max_dimension, 1344, 1152, 1024, 896, 768]:
         for quality in [88, 82, 76, 70, 64]:
             buffer = io.BytesIO()
             candidate.save(buffer, format="JPEG", quality=quality, optimize=True, progressive=True)
@@ -142,6 +172,7 @@ def _save_jpeg_with_limit(image: Image.Image, max_bytes: int, max_dimension: int
                 smallest_payload = payload
             if len(payload) <= max_bytes:
                 return payload, "image/jpeg", ".jpg"
+        candidate = _resize_image_to_limit(candidate, dimension_limit).convert("RGB")
     return smallest_payload, "image/jpeg", ".jpg"
 
 
@@ -230,7 +261,7 @@ class MockImageProviderAdapter(BaseImageProviderAdapter):
 
 class OpenAICompatibleImageProviderAdapter(BaseImageProviderAdapter):
     def _post_json(self, *, url: str, api_key: str, payload: dict, timeout_seconds: int) -> tuple[dict, str]:
-        response = requests.post(
+        response = _provider_session().post(
             url,
             headers={
                 "Content-Type": "application/json",
@@ -270,7 +301,7 @@ class OpenAICompatibleImageProviderAdapter(BaseImageProviderAdapter):
         files: dict,
         timeout_seconds: int,
     ) -> tuple[dict, str]:
-        response = requests.post(
+        response = _provider_session().post(
             url,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -420,7 +451,112 @@ class OpenAICompatibleImageProviderAdapter(BaseImageProviderAdapter):
         )
 
 
+class SiliconFlowImageProviderAdapter(OpenAICompatibleImageProviderAdapter):
+    """Adapter for 硅基流动 (SiliconFlow) Qwen image models.
+
+    SiliconFlow is only loosely OpenAI-compatible:
+      - Both text-to-image and image-to-image (Qwen-Image-Edit) go to the SAME
+        /v1/images/generations endpoint.
+      - img2img passes the reference as a JSON `image` field whose value is a
+        base64 data-URI (`data:image/png;base64,...`), NOT multipart on /edits.
+      - The size parameter is `image_size` (optional for edit models).
+      - The response carries the generated image as a remote `url` that must be
+        fetched and stored.
+    """
+
+    def generate(self, *, task) -> ProviderResult:
+        channel = task.channel
+        api_key = channel.api_key
+        if not api_key:
+            raise ValueError("缺少生图渠道 API Key")
+
+        prompt = (task.prompt or "").strip()
+        if task.negative_prompt.strip():
+            prompt = f"{prompt}\nAvoid: {task.negative_prompt.strip()}"
+        quality = getattr(task, "quality_code", "auto") or "auto"
+
+        payload = {
+            "model": channel.model_name,
+            "prompt": prompt,
+        }
+        # Map the app's size to SiliconFlow's `image_size`. Edit models (Qwen-Image*
+        # -Edit) ignore image_size; t2i models (Qwen/Qwen-Image) accept it.
+        size_code = task.size_code or "1024x1024"
+        if task.generation_mode == GenerateTask.Mode.TEXT_TO_IMAGE:
+            payload["image_size"] = size_code
+
+        has_reference = bool(task.reference_object_key or task.reference_image_data_url)
+        if task.generation_mode == GenerateTask.Mode.IMAGE_TO_IMAGE:
+            if not has_reference:
+                raise ValueError("图生图模式需要上传参考图")
+            reference_content, mime_type = _load_task_reference_image(task)
+            if not reference_content or not mime_type:
+                raise ValueError("参考图解析失败")
+            # Normalize/size-limit the reference, then send as a base64 data-URI.
+            reference_content, mime_type, _suffix = _normalize_reference_image_for_edit(reference_content, mime_type)
+            data_uri = _encode_data_url(reference_content, mime_type)
+            payload["image"] = data_uri
+
+        generation_url = _join_url(channel.base_url, channel.api_path or "/v1/images/generations")
+        timeout_seconds = _openai_generation_timeout_seconds(channel)
+        logger.info(
+            "发送硅基流动生图请求 task_no=%s url=%s mode=%s size=%s quality=%s has_ref=%s",
+            task.task_no,
+            generation_url,
+            task.generation_mode,
+            size_code,
+            quality,
+            has_reference,
+        )
+        response_data, request_id = self._post_json(
+            url=generation_url,
+            api_key=api_key,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+        )
+
+        images: list[ProviderImage] = []
+        # SiliconFlow returns both `images` and `data` arrays with {url}.
+        for item in list(response_data.get("images") or []) + list(response_data.get("data") or []):
+            if not isinstance(item, dict):
+                continue
+            b64_json = item.get("b64_json")
+            if b64_json:
+                try:
+                    images.append(ProviderImage(mime_type="image/png", content=base64.b64decode(b64_json)))
+                except Exception:
+                    continue
+                if images:
+                    break
+                continue
+            for key in ("url", "image_url"):
+                if item.get(key):
+                    images.append(ProviderImage(mime_type="image/png", remote_url=item[key]))
+                    break
+            if images:
+                break
+
+        if not images:
+            raise ValueError("硅基流动渠道未返回可用图片")
+
+        fallback_request_id = str(response_data.get("created") or response_data.get("id") or task.task_no)
+        logger.info(
+            "硅基流动渠道已返回响应 task_no=%s images=%s request_id=%s",
+            task.task_no,
+            len(images),
+            request_id or fallback_request_id,
+        )
+        return ProviderResult(
+            request_id=request_id or fallback_request_id,
+            raw_response=_trim_openai_image_response(response_data),
+            images=images,
+        )
+
+
 def get_adapter(*, task=None) -> BaseImageProviderAdapter:
     if settings.MOCK_PROVIDER_ENABLED:
         return MockImageProviderAdapter()
+    vendor = getattr(getattr(task, "channel", None), "provider_vendor", None)
+    if vendor == ImageChannel.ProviderVendor.SILICONFLOW:
+        return SiliconFlowImageProviderAdapter()
     return OpenAICompatibleImageProviderAdapter()
