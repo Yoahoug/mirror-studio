@@ -29,3 +29,5 @@ static/images/workspace-poster.png
 部署/*密钥*
 部署/上线包*/
 部署/*.zip
+.venv-ref/
+.reftmp/
