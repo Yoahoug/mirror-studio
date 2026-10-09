@@ -648,7 +648,9 @@ func TestConfigPutThenGetRoundTripAndSecretMasking(t *testing.T) {
 		"value": secretValue, "is_secret": true, "description": "测试密钥", "category": "general",
 	})
 	secret := h.data(h.request(http.MethodGet, "/console/api/config/custom.secret/", nil))
-	h.mustEqual(secret["value"], "******")
+	// The reference's masked_value keeps the first and last three characters so
+	// an operator can tell two keys apart.
+	h.mustEqual(secret["value"], "sup******123")
 	h.mustEqual(secret["is_secret"], true)
 	h.mustEqual(secret["description"], "测试密钥")
 
@@ -669,12 +671,26 @@ func TestConfigPutThenGetRoundTripAndSecretMasking(t *testing.T) {
 	}
 	h.mustEqual(plain, secretValue)
 
+	// A short secret shows nothing at all, exactly like the reference.
+	h.request(http.MethodPut, "/console/api/config/custom.short.secret/", map[string]any{
+		"value": "short", "is_secret": true, "description": "短密钥", "category": "general",
+	})
+	short := h.data(h.request(http.MethodGet, "/console/api/config/custom.short.secret/", nil))
+	h.mustEqual(short["value"], "******")
+
 	list := h.data(h.request(http.MethodGet, "/console/api/config/?category=general", nil))
 	listed := list["items"].([]any)
-	if len(listed) != 1 {
+	if len(listed) != 2 {
 		t.Fatalf("general category length %d", len(listed))
 	}
-	h.mustEqual(listed[0].(map[string]any)["value"], "******")
+	masked := map[string]bool{}
+	for _, item := range listed {
+		masked[item.(map[string]any)["value"].(string)] = true
+	}
+	// Neither secret may be listed in the clear.
+	h.mustEqual(masked["sup******123"], true)
+	h.mustEqual(masked["******"], true)
+	h.mustEqual(masked[secretValue], false)
 	categories := list["categories"].([]any)
 	h.mustEqual(len(categories), 4)
 	h.mustEqual(categories[0].(map[string]any)["code"], "general")

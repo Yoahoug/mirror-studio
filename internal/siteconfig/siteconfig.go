@@ -95,12 +95,20 @@ type Row struct {
 	UpdatedAt   string
 }
 
-// Masked returns the value the console may display.
+// Masked returns the value the console may display. The shape reproduces the
+// reference's `masked_value`: the first and last three characters stay visible
+// so an operator can tell two keys apart, and a short value shows nothing.
 func (r Row) Masked() string {
-	if r.IsSecret && r.Value != "" {
+	if !r.IsSecret {
+		return r.Value
+	}
+	if r.Value == "" {
+		return ""
+	}
+	if len(r.Value) <= 8 {
 		return "******"
 	}
-	return r.Value
+	return r.Value[:3] + "******" + r.Value[len(r.Value)-3:]
 }
 
 // Service reads and writes configuration with a short-lived cache.
