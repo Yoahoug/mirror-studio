@@ -20,6 +20,12 @@ type Config struct {
 	FieldCryptKey     string
 	TrustProxyHost    bool
 	TrustForwardedFor bool
+	// SecureSSLRedirect mirrors SECURE_SSL_REDIRECT: only honoured outside
+	// DEBUG, redirecting plain-HTTP requests to the https origin.
+	SecureSSLRedirect bool
+	// SecureProxySSLHeaderValue is the X-Forwarded-Proto value that counts as
+	// "already secure" behind a proxy (SECURE_PROXY_SSL_HEADER's second half).
+	SecureProxySSLHeaderValue string
 
 	TimeZone string
 
@@ -273,6 +279,13 @@ func Load() (*Config, error) {
 	if cfg.TrustForwardedFor, err = envBool("TRUST_X_FORWARDED_FOR", !cfg.Debug); err != nil {
 		return nil, err
 	}
+	// SECURE_SSL_REDIRECT ports the reference's production setting: plain-HTTP
+	// requests are permanently redirected to the https origin. The proxy header
+	// decides what "already https" means, mirroring SECURE_PROXY_SSL_HEADER.
+	if cfg.SecureSSLRedirect, err = envBool("SECURE_SSL_REDIRECT", !cfg.Debug); err != nil {
+		return nil, err
+	}
+	cfg.SecureProxySSLHeaderValue = envStr("SECURE_PROXY_SSL_HEADER_VALUE", "https")
 
 	cfg.SiteName = envStr("SITE_NAME", "绘镜 Studio")
 	cfg.BrandName = envStr("BRAND_NAME", "绘镜")

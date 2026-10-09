@@ -70,6 +70,25 @@ func TestLoadAllowsMockProviderInDebug(t *testing.T) {
 	}
 }
 
+func TestLoadSecureSSLRedirectDefaults(t *testing.T) {
+	setEnv(t, prodEnv(nil))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.SecureSSLRedirect {
+		t.Fatal("SECURE_SSL_REDIRECT must default to true outside DEBUG")
+	}
+	setEnv(t, prodEnv(map[string]string{"DEBUG": "1"}))
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SecureSSLRedirect {
+		t.Fatal("SECURE_SSL_REDIRECT must default to false in DEBUG")
+	}
+}
+
 func TestLoadRejectsRemovedSwitches(t *testing.T) {
 	for _, name := range []string{
 		"ALLOW_INSECURE_PROD", "CONSOLE_HMAC_ENABLED",

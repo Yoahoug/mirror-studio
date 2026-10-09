@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"mirror-studio/internal/auth"
 	"mirror-studio/internal/config"
 	"mirror-studio/internal/crypt"
 	"mirror-studio/internal/db"
@@ -200,7 +201,7 @@ func (s *Service) workspacePage(w http.ResponseWriter, r *http.Request) error {
 	values["IS_AUTHENTICATED"] = httpapi.UserOf(r) != nil
 	values["CAPTCHA_CODE"] = ""
 	values["CAPTCHA_SVG"] = ""
-	if httpapi.UserOf(r) == nil && s.cfg.LoginCaptchaEnabled {
+	if httpapi.UserOf(r) == nil && s.loginCaptchaEnabled() {
 		code := s.issueCaptcha(r)
 		values["CAPTCHA_CODE"] = code
 		values["CAPTCHA_SVG"] = renderCaptchaDataURI(code)
@@ -354,7 +355,7 @@ func (s *Service) render(w http.ResponseWriter, r *http.Request, name string, va
 }
 
 func (s *Service) issueCaptcha(r *http.Request) string {
-	code := generateCaptchaCode()
+	code := auth.GenerateCaptchaCode(auth.CaptchaLength)
 	if session := httpapi.SessionOf(r); session != nil {
 		session.Set("captcha_code", code)
 	}
@@ -474,6 +475,9 @@ func (s *Service) loginSubmit(w http.ResponseWriter, r *http.Request) error {
 	if authenticated != nil {
 		s.signIn(r, authenticated)
 		s.clearLoginFailures(r.Context(), accountForm.value("username"), httpapi.From(r).ClientIP)
+		// django.contrib.auth.login() rotates the CSRF token on every login; the
+		// rendered page is stale the moment this redirect lands.
+		httpapi.RotateCSRFToken(w, r)
 		redirectFound(w, s.loginSuccessURL(r))
 		return nil
 	}
@@ -549,7 +553,7 @@ func (s *Service) forgotPasswordSubmit(w http.ResponseWriter, r *http.Request) e
 }
 
 func (s *Service) captchaMatches(r *http.Request, submitted string) bool {
-	if !s.cfg.LoginCaptchaEnabled {
+	if !s.loginCaptchaEnabled() {
 		return true
 	}
 	expected := ""
@@ -562,12 +566,24 @@ func (s *Service) captchaMatches(r *http.Request, submitted string) bool {
 	return strings.EqualFold(strings.TrimSpace(submitted), expected)
 }
 
+// loginCaptchaEnabled resolves site.login_captcha_enabled (DB → env → default),
+// the same chain the API captcha path uses.
+func (s *Service) loginCaptchaEnabled() bool {
+	return s.site.Bool("site.login_captcha_enabled", s.cfg.LoginCaptchaEnabled)
+}
+
 func (s *Service) signIn(r *http.Request, user httpapi.Principal) {
 	session := httpapi.SessionOf(r)
 	if session == nil {
 		return
 	}
 	session.SetInt("user_id", user.ID())
+	// Arm the per-session password fingerprint the middleware verifies on every
+	// request, so a password change retires this session. Logins through the
+	// auth service set the same key there.
+	if hasher, ok := user.(interface{ SessionAuthHash() string }); ok {
+		session.Set("session_auth_hash", hasher.SessionAuthHash())
+	}
 	session.CycleKey()
 }
 

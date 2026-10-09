@@ -276,6 +276,21 @@ func newTestEnv(t *testing.T, options envOptions) *testEnv {
 	if err := handle.Migrate(nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	return newTestEnvOnDB(t, options, handle)
+}
+
+// newTestEnvSharingDB builds a second client over the first environment's
+// database, which is what a second browser session needs.
+func newTestEnvSharingDB(t *testing.T, source *testEnv) *testEnv {
+	t.Helper()
+	return newTestEnvOnDB(t, envOptions{
+		registerEnabled: source.svc.Cfg.RegisterEnabled,
+		captchaEnabled:  source.svc.Cfg.LoginCaptchaEnabled,
+	}, source.db)
+}
+
+func newTestEnvOnDB(t *testing.T, options envOptions, handle *db.DB) *testEnv {
+	t.Helper()
 
 	cfg := &config.Config{
 		Debug:               true,
@@ -634,6 +649,9 @@ func TestRegisterAutoLogin(t *testing.T) {
 	if env.sessionCookie() == "" {
 		t.Fatal("registration must auto-login")
 	}
+	// Auto-login rotated the CSRF token; the client reloads it like a browser
+	// would after the register response.
+	env.refreshCSRF()
 	status, payload, _ = env.call(func() (*http.Response, map[string]any) {
 		return env.postJSON("/api/auth/register", map[string]any{
 			"username": "diff-user", "email": "other@example.com",
@@ -779,6 +797,8 @@ func TestAccountEndpoints(t *testing.T) {
 	}); status != http.StatusOK {
 		t.Fatalf("login failed: %d %s", status, messageOf(t, payload))
 	}
+	// Login rotated the CSRF token; the client refreshes before the next write.
+	env.refreshCSRF()
 
 	status, payload, _ := env.call(func() (*http.Response, map[string]any) {
 		response := env.get("/api/account/summary")
@@ -881,7 +901,10 @@ func TestAccountEndpoints(t *testing.T) {
 	if _, err := env.svc.Authenticate(context.Background(), "diff-user", "DiffPass456!@#"); err != nil {
 		t.Fatalf("new password rejected: %v", err)
 	}
-	// update_session_auth_hash keeps the session usable.
+	// update_session_auth_hash keeps the session usable. The login rotation
+	// retired the token this client cached, so it refreshes first, exactly like
+	// a real client reloading after a password change.
+	env.refreshCSRF()
 	status, _, _ = env.call(func() (*http.Response, map[string]any) {
 		response := env.get("/api/account/settings")
 		return response, decodeEnvelope(t, response)

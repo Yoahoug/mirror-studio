@@ -145,6 +145,8 @@ func (h *Handlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.clearLoginFailures(ctx, username, clientIP)
+	// django.contrib.auth.login() rotates the CSRF token on every login.
+	httpapi.RotateCSRFToken(w, r)
 	httpapi.SetCSRFCookie(w)
 	httpapi.OK(w, map[string]any{"username": user.Username})
 }
@@ -284,6 +286,8 @@ func (h *Handlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	// Registration signs the user in through the same login() call.
+	httpapi.RotateCSRFToken(w, r)
 	httpapi.SetCSRFCookie(w)
 	httpapi.OK(w, map[string]any{"username": user.Username})
 }
@@ -463,8 +467,14 @@ func (h *Handlers) handleAccountPassword(w http.ResponseWriter, r *http.Request)
 		h.serverError(w, err)
 		return
 	}
-	// update_session_auth_hash keeps this session valid across the change.
+	// update_session_auth_hash keeps this session valid across the change: the
+	// stored fingerprint is refreshed so the middleware does not flush it, and
+	// every other session dies because its copy no longer matches.
 	if session := httpapi.SessionOf(r); session != nil {
+		fresh, err := h.svc.ByID(ctx, user.IDValue)
+		if err == nil {
+			session.Set("session_auth_hash", SessionAuthHash(fresh.Password))
+		}
 		session.CycleKey()
 	}
 	h.svc.logAudit(ctx, "password_change", "users", map[string]any{"username": user.Username})

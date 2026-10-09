@@ -70,7 +70,10 @@ func NewService(handle *db.DB, site *siteconfig.Service, cfg *config.Config, log
 // reuses through Increment.
 func (s *Service) Counters() *Counters { return s.counters }
 
-// IPBlocked reports whether the middleware must reject the request.
+// IPBlocked reports whether the middleware must reject the request. A lookup
+// failure fails closed (the request is refused), matching the reference where
+// an exception from the rule query turns into a 500 instead of letting the
+// caller through.
 func (s *Service) IPBlocked(ctx context.Context, ip string) (bool, string) {
 	ip = strings.TrimSpace(ip)
 	if ip == "" {
@@ -81,8 +84,8 @@ func (s *Service) IPBlocked(ctx context.Context, ip string) (bool, string) {
 	}
 	blocked, err := s.lookupIPRule(ctx, ip)
 	if err != nil {
-		s.logError("risk ip rule lookup failed", "ip", ip, "error", err)
-		return false, ""
+		s.logError("risk ip rule lookup failed; refusing the request", "ip", ip, "error", err)
+		return true, "当前 IP 已被限制访问"
 	}
 	s.storeIPRule(ip, blocked)
 	return blockedIP(blocked)
@@ -173,7 +176,10 @@ func (s *Service) ClearLoginFailures(ctx context.Context, username, ip string) {
 }
 
 // EnsurePromptSafe rejects an empty prompt and any prompt matching an active
-// sensitive-word rule.
+// sensitive-word rule. The reference writes a prompt_blocked event here, but
+// its only caller runs inside the submission's atomic block and the rejection
+// rolls the event back, so nothing ever persists — the rewrite places the call
+// at the same point and writes nothing either.
 func (s *Service) EnsurePromptSafe(ctx context.Context, prompt string) error {
 	trimmed := strings.TrimSpace(prompt)
 	if trimmed == "" {
@@ -197,7 +203,9 @@ func (s *Service) EnsurePromptSafe(ctx context.Context, prompt string) error {
 }
 
 // ConsumeTaskQuota counts one submission and rejects it once the window limit
-// is exceeded; the caller maps the error to HTTP 403 code 400403.
+// is exceeded; the caller maps the error to HTTP 403 code 400403. The
+// reference's task_rate_limited write sits inside the same atomic submission
+// block and rolls back with it, so no event survives — kept identical.
 func (s *Service) ConsumeTaskQuota(ctx context.Context, userID int64) error {
 	window := time.Duration(s.taskWindowSeconds()) * time.Second
 	if s.counters.Increment(taskKey(userID), window) > int64(s.taskLimitPerWindow()) {
@@ -240,11 +248,15 @@ func (s *Service) sensitiveRules(ctx context.Context) ([]sensitiveRule, error) {
 }
 
 func (s *Service) insertRiskEvent(ctx context.Context, eventType, ip, detail string) error {
+	return s.insertRiskEventFor(ctx, eventType, ip, detail, sql.NullInt64{})
+}
+
+func (s *Service) insertRiskEventFor(ctx context.Context, eventType, ip, detail string, userID sql.NullInt64) error {
 	now := db.FormatTime(time.Now())
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO risk_riskevent (created_at, updated_at, event_type, request_ip, detail_json, user_id)
-		 VALUES (?, ?, ?, ?, ?, NULL)`,
-		now, now, eventType, db.NullableString(ip), detail,
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		now, now, eventType, db.NullableString(ip), detail, userID,
 	)
 	return err
 }

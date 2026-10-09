@@ -1,14 +1,12 @@
 package media
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"image"
 	"io"
 	"os"
 	"path"
@@ -19,6 +17,7 @@ import (
 
 	"mirror-studio/internal/crypt"
 	"mirror-studio/internal/db"
+	"mirror-studio/internal/imageutil"
 )
 
 // ReferenceUploadTokenMaxAge is how long a signed reference-upload token stays
@@ -488,7 +487,13 @@ func (s *Service) validateReferenceImageContent(content []byte, mimeType, name s
 	if int64(len(content)) > s.cfg.MaxReferenceImageBytes {
 		return nil, "", "", invalidValue("参考图过大，请压缩后再试")
 	}
-	if _, _, err := image.DecodeConfig(bytes.NewReader(content)); err != nil {
+	// The reference runs Pillow's Image.verify over the whole file; a truncated
+	// payload whose header parses must be rejected the same way.
+	if _, _, err := imageutil.Decode(content); err != nil {
+		return nil, "", "", invalidValue("参考图无法识别，请重新上传")
+	}
+	width, height := imageutil.DecodeConfig(content)
+	if width == 0 || height == 0 {
 		return nil, "", "", invalidValue("参考图无法识别，请重新上传")
 	}
 	return content, normalized, rawName, nil

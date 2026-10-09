@@ -90,11 +90,7 @@ func (s *emailCodeStore) takeCode(email string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.codes[email]
-	if !ok {
-		return "", false
-	}
-	delete(s.codes, email)
-	if time.Now().After(entry.expiresAt) {
+	if !ok || time.Now().After(entry.expiresAt) {
 		return "", false
 	}
 	return entry.hash, true
@@ -108,6 +104,14 @@ func (s *emailCodeStore) peekCode(email string) (string, bool) {
 		return "", false
 	}
 	return entry.hash, true
+}
+
+// dropCode removes a code once a validation succeeded; an entry that already
+// expired simply disappears.
+func (s *emailCodeStore) dropCode(email string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.codes, email)
 }
 
 func (s *emailCodeStore) cooldownRemaining(email string) time.Duration {
@@ -260,7 +264,9 @@ func (s *Service) ValidateRegisterEmailCode(email, code string) error {
 	return nil
 }
 
-// ConsumeRegisterEmailCode validates and then deletes a code.
+// ConsumeRegisterEmailCode validates first and deletes only on success, the
+// reference's order (apps/users/email_verification.py): a wrong guess must not
+// burn a code that is still valid.
 func (s *Service) ConsumeRegisterEmailCode(email, code string) error {
 	if !s.EmailVerificationEnabled() {
 		return nil
@@ -273,6 +279,7 @@ func (s *Service) ConsumeRegisterEmailCode(email, code string) error {
 	if !hmac.Equal([]byte(stored), []byte(hashEmailCode(strings.TrimSpace(code)))) {
 		return ErrEmailCodeInvalid
 	}
+	s.emailCodes.dropCode(normalized)
 	return nil
 }
 

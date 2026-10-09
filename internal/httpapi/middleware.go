@@ -93,6 +93,18 @@ func NewMiddleware(options Options, root http.Handler) *Middleware {
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cfg := m.options.Config
 
+	// SECURE_SSL_REDIRECT: outside DEBUG a plain-HTTP request is permanently
+	// sent to the https origin, the way SecurityMiddleware does it in the
+	// reference's production settings. X-Forwarded-Proto decides whether the
+	// hop in front of us already encrypted the connection.
+	if cfg != nil && !cfg.Debug && cfg.SecureSSLRedirect && cfg.PublicOrigin != "" && !requestIsSecure(r, cfg.SecureProxySSLHeaderValue) {
+		target := cfg.PublicOrigin + r.URL.RequestURI()
+		w.Header().Set("Location", target)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusMovedPermanently)
+		return
+	}
+
 	requestID := r.Header.Get("X-Request-Id")
 	if strings.TrimSpace(requestID) == "" {
 		requestID = randomHex(8)
@@ -155,7 +167,28 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if userID := state.Session.GetInt("user_id"); userID > 0 && m.options.ResolveUser != nil {
 		user, err := m.options.ResolveUser(r.Context(), userID)
 		if err == nil {
-			state.User = user
+			// Django's _auth_user_hash: a session minted under an older password
+			// must die when the password changes, so the stored hash is compared
+			// on every request. A session that predates the check (no key yet)
+			// is treated like a fresh login and re-armed.
+			if expected, ok := user.(interface{ SessionAuthHash() string }); ok {
+				stored := state.Session.Get("session_auth_hash")
+				current := expected.SessionAuthHash()
+				switch {
+				case stored == "":
+					// A session that predates the check is armed like a fresh
+					// login; arming marks the session modified, which is what
+					// Django's get_user does on the same transition.
+					state.Session.Set("session_auth_hash", current)
+				case stored != current:
+					state.Session.Flush()
+					state.User = nil
+					user = nil
+				}
+			}
+			if user != nil {
+				state.User = user
+			}
 		}
 	}
 
@@ -206,6 +239,19 @@ func isSafeMethod(method string) bool {
 		return true
 	}
 	return false
+}
+
+// requestIsSecure reports whether the request already arrived over https, as
+// far as the deployment can tell: either the socket is TLS or the trusted
+// proxy header says so.
+func requestIsSecure(r *http.Request, proxyHeaderValue string) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if proxyHeaderValue == "" {
+		proxyHeaderValue = "https"
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), proxyHeaderValue)
 }
 
 func pathHasPrefix(path, prefix string) bool { return strings.HasPrefix(path, prefix) }
@@ -266,6 +312,15 @@ func (w *responseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter 
 func (w *responseWriter) applyHeaders() {
 	header := w.Header()
 	if w.staticOnly {
+		// The reference's static handler sits outside SecurityMiddleware in DEV
+		// and the differential corpus pins those bare headers; production serves
+		// static through WhiteNoise behind SecurityMiddleware, which does add
+		// them, so the rewrite reproduces that split.
+		if w.cfg != nil && !w.cfg.Debug {
+			header.Set("X-Content-Type-Options", "nosniff")
+			header.Set("Referrer-Policy", "same-origin")
+			header.Set("Cross-Origin-Opener-Policy", "same-origin")
+		}
 		return
 	}
 	if w.ctx != nil {
@@ -379,6 +434,22 @@ func SetCSRFCookie(w http.ResponseWriter) {
 	if writer := responseWriterFor(w); writer != nil {
 		writer.setCSRFCookie = true
 	}
+}
+
+// RotateCSRFToken replaces the request's CSRF material with a fresh token and
+// marks the response to carry the new cookie, which is what Django's
+// rotate_token does inside login(). The old cookie value stops verifying
+// immediately, so the next mutating request must use the new token.
+func RotateCSRFToken(w http.ResponseWriter, r *http.Request) {
+	writer := responseWriterFor(w)
+	if writer == nil || writer.ctx == nil {
+		return
+	}
+	writer.ctx.CSRF = NewCSRFToken()
+	writer.setCSRFCookie = true
+	// A form that rendered before login carries the old token; Django accepts
+	// that a login response must be fully reloaded, and so do we.
+	_ = r
 }
 
 // ClearSession drops the session cookie and record, which is what logout does.

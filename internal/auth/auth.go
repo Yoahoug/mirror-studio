@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -106,6 +107,19 @@ func (p Principal) Username() string     { return p.User.Username }
 func (p Principal) Email() string        { return p.User.Email }
 func (p Principal) IsOperator() bool     { return p.User.IsOperator() }
 func (p Principal) IsActiveStatus() bool { return p.User.IsActiveStatus() }
+
+// SessionAuthHash carries the password-hash fingerprint the middleware compares
+// on every request, the role _auth_user_hash plays in Django: changing the
+// password invalidates every session minted under the old one.
+func (p Principal) SessionAuthHash() string { return SessionAuthHash(p.User.Password) }
+
+// SessionAuthHash is the stored session fingerprint: a salted SHA-256 over the
+// password hash column. It is not the password hash itself and leaks nothing on
+// its own; equality only proves the session was minted under this hash.
+func SessionAuthHash(passwordHash string) string {
+	sum := sha256.Sum256([]byte("mirror-studio:session-auth:" + passwordHash))
+	return hex.EncodeToString(sum[:])
+}
 
 // Profile is the users_userprofile row.
 type Profile struct {
@@ -229,9 +243,10 @@ func HashPassword(password string) (string, error) {
 
 // VerifyPassword checks a password against a Django hash. It understands the
 // argon2 hashes this service writes and the pbkdf2_sha256 hashes the reference
-// implementation may still hold. needsRehash reports that re-encoding the
-// password with the current default (argon2) is advisable; the reference login
-// path never rehashes, so nothing here writes on login.
+// implementation may still hold. needsRehash reports that the stored hash is
+// not the current default (argon2) and the caller that just verified a login
+// must re-encode it, which is what Django's check_password does through
+// hasher.must_update on every successful login.
 func VerifyPassword(encoded, password string) (ok bool, needsRehash bool) {
 	encoded = strings.TrimSpace(encoded)
 	switch {
@@ -514,7 +529,10 @@ func (s *Service) exists(ctx context.Context, query string, args ...any) (bool, 
 // Authenticate reproduces ModelBackend.authenticate: the username must match
 // exactly, the password must verify and is_active must be true. The account
 // status check that produces 账号状态不可用 happens one layer up, in the login
-// form, exactly like the reference.
+// form, exactly like the reference. A legacy hash that still verifies
+// (pbkdf2_sha256, or argon2 written under weaker parameters) is re-encoded to
+// the current argon2 parameters right here, which is what Django's
+// check_password does through hasher.must_update on every successful login.
 func (s *Service) Authenticate(ctx context.Context, username, password string) (*User, error) {
 	user, err := s.ByUsername(ctx, username)
 	if err != nil {
@@ -523,9 +541,23 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 		}
 		return nil, err
 	}
-	ok, _ := VerifyPassword(user.Password, password)
+	ok, needsRehash := VerifyPassword(user.Password, password)
 	if !ok || !user.IsActiveFlag {
 		return nil, ErrInvalidCredentials
+	}
+	if needsRehash {
+		if hashed, hashErr := HashPassword(password); hashErr == nil {
+			if _, updateErr := s.DB.ExecContext(ctx,
+				`UPDATE users_user SET password = ? WHERE id = ?`, hashed, user.IDValue,
+			); updateErr != nil {
+				// The login itself stands; the upgrade retries on the next one.
+				if s.Log != nil {
+					s.Log.Warn("password rehash on login failed", "user_id", user.IDValue, "error", updateErr)
+				}
+			} else {
+				user.Password = hashed
+			}
+		}
 	}
 	return user, nil
 }
@@ -612,7 +644,9 @@ func (s *Service) UpdateLogin(ctx context.Context, userID int64, ip string) erro
 // is re-keyed here too, the closest this session store gets to a flush) and
 // user_id is stored. It also writes users_user.last_login, which the reference
 // does through the user_logged_in signal; last_login_at/last_login_ip are
-// written separately by UpdateLogin.
+// written separately by UpdateLogin. The CSRF token rotation Django performs
+// inside login() happens at the call sites, which own the response writer the
+// new cookie needs.
 func (s *Service) Login(ctx context.Context, session *httpapi.Session, user *User) error {
 	if session == nil || user == nil {
 		return errors.New("login requires a session and a user")
@@ -621,6 +655,7 @@ func (s *Service) Login(ctx context.Context, session *httpapi.Session, user *Use
 		session.CycleKey()
 	}
 	session.SetInt(SessionUserIDKey, user.IDValue)
+	session.Set("session_auth_hash", SessionAuthHash(user.Password))
 	_, err := s.DB.ExecContext(ctx,
 		`UPDATE users_user SET last_login = ? WHERE id = ?`,
 		db.FormatTime(time.Now()), user.IDValue,

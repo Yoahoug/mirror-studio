@@ -891,15 +891,22 @@ func parseSizeParts(sizeCode string) (int, int, error) {
 	return atoi(match[1]), atoi(match[2]), nil
 }
 
-// decodeAndValidateImage reports whether the bytes are a decodable image of an
-// accepted MIME type, with its dimensions.
+// decodeAndValidateImage reports whether the bytes are a fully decodable image
+// of an accepted MIME type, with its dimensions. The reference decodes the
+// whole file (Pillow Image.verify), so a truncated payload whose header parses
+// is still rejected.
 func decodeAndValidateImage(content []byte, mimeType string) (int, int, bool) {
 	switch mimeType {
 	case "image/png", "image/jpeg", "image/webp":
 	default:
 		return 0, 0, false
 	}
-	width, height := imageutil.DecodeConfig(content)
+	decoded, _, err := imageutil.Decode(content)
+	if err != nil || decoded == nil {
+		return 0, 0, false
+	}
+	bounds := decoded.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
 	if width == 0 || height == 0 {
 		return 0, 0, false
 	}

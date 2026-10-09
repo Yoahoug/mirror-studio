@@ -35,6 +35,8 @@ func newTestService(t *testing.T, cfg *config.Config) (*Service, *db.DB) {
 	return NewService(handle, site, cfg, nil), handle
 }
 
+
+
 func insertIPRule(t *testing.T, handle *db.DB, ip string, blocked bool, expires any) {
 	t.Helper()
 	now := db.FormatTime(time.Now())
@@ -240,8 +242,9 @@ func TestEnsurePromptSafe(t *testing.T) {
 	if err := service.EnsurePromptSafe(ctx, "包含新增词"); err != nil {
 		t.Fatalf("rule inserted after the cache refresh must not match yet: %v", err)
 	}
-	// The reference writes prompt_blocked inside the generator's transaction,
-	// which rolls back with the rejection, so no event row survives.
+	// The reference writes prompt_blocked inside the submission's atomic block,
+	// which rolls back with the rejection, so no event row survives. The
+	// rewrite places the call at the same point and likewise persists nothing.
 	if got := countRiskEvents(t, handle); got != 0 {
 		t.Fatalf("prompt rejection wrote %d risk events, want 0", got)
 	}

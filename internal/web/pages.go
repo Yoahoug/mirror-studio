@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"mirror-studio/internal/httpapi"
 )
@@ -21,11 +20,7 @@ import (
 //go:embed all:templates
 var templateFiles embed.FS
 
-const (
-	captchaAlphabet  = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
-	captchaCodeLen   = 4
-	captchaSVGPrefix = "data:image/svg+xml;base64,"
-)
+const captchaSVGPrefix = "data:image/svg+xml;base64,"
 
 // djangoErrorPage is django.views.defaults.ERROR_PAGE_TEMPLATE, which is what
 // an unmatched URL or a denied console request renders.
@@ -87,18 +82,9 @@ func fullPath(r *http.Request) string {
 
 // ── captcha ──
 
-func generateCaptchaCode() string {
-	source := rand.New(rand.NewSource(time.Now().UnixNano()))
-	builder := &strings.Builder{}
-	for index := 0; index < captchaCodeLen; index++ {
-		builder.WriteByte(captchaAlphabet[source.Intn(len(captchaAlphabet))])
-	}
-	return builder.String()
-}
-
 // renderCaptchaDataURI reproduces the reference SVG generator: the drawing is
 // derived deterministically from the code, so the same code always renders the
-// same image.
+// same image. Codes themselves come from internal/auth's CSPRNG generator.
 func renderCaptchaDataURI(code string) string {
 	width, height := 168, 56
 	seed := int64(0)

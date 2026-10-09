@@ -210,6 +210,11 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 			return existing, nil
 		}
 	}
+	// The reference calls ensure_prompt_safe / ensure_task_rate_limit inside its
+	// atomic submit block, so the risk events those functions write are rolled
+	// back together with the rejection — only login_failure rows ever persist.
+	// The rewrite keeps that placement and writes nothing here; the *For
+	// variants exist for callers that run outside a transaction.
 	if err := s.risk.EnsurePromptSafe(ctx, prompt); err != nil {
 		return nil, permissionFailure(err.Error())
 	}

@@ -164,6 +164,25 @@ func isGlobalIP(ip net.IP) bool {
 		return false
 	case ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8:
 		return false
+	// 2002::/16 (6to4): the last four bytes encode an arbitrary IPv4
+	// destination, so an attacker can reach any v4 host through it.
+	case ip[0] == 0x20 && ip[1] == 0x02:
+		return false
+	// 2001:0000::/24 through 2001:01ff::/24 (the first two octets of the /23
+	// IETF protocol assignments Python's is_global rejects as non-global).
+	// 2001:db8::/32 documentation is rejected above; Teredo 2001::/32 also
+	// lands here.
+	case ip[0] == 0x20 && ip[1] == 0x01 && ip[2] <= 0x01:
+		return false
+	// 100::/64: discard-only range.
+	case ip[0] == 0x01 && ip[1] == 0x00 && ip[2] == 0x00 && ip[3] == 0x00:
+		return false
+	// 64:ff9b:1::/48: local-use NAT64.
+	case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b && ip[4] == 0x00 && ip[5] == 0x01:
+		return false
+	// 3fff::/20: documentation range (RFC 9637).
+	case ip[0] == 0x3f && ip[1] == 0xff:
+		return false
 	}
 	return true
 }
