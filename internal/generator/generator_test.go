@@ -32,6 +32,8 @@ import (
 	"mirror-studio/internal/quota"
 	"mirror-studio/internal/risk"
 	"mirror-studio/internal/siteconfig"
+
+	"mirror-studio/internal/imageutil"
 )
 
 // Ported from apps/generator/tests.py (GeneratorFlowTests). Method names and
@@ -1354,7 +1356,7 @@ func TestOpenAICompatibleChannelSendsReferenceImageForImageToImage(t *testing.T)
 	if len(imageData) == 0 {
 		t.Fatal("image part is empty")
 	}
-	if _, err := decodeImageBytes(imageData); err != nil {
+	if _, _, err := imageutil.Decode(imageData); err != nil {
 		t.Fatalf("image part is not decodable: %v", err)
 	}
 }

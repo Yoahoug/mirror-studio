@@ -1,28 +1,24 @@
 package novel
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"image"
-	"image/jpeg"
-	"image/png"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	_ "image/gif" // provider responses may carry GIF; decoded only for previews
-
 	"mirror-studio/internal/httpapi"
-
-	xdraw "golang.org/x/image/draw"
+	"mirror-studio/internal/imageutil"
 )
 
 // onTheFlyPreviewDimension is the fixed 768 the reference view passes to its
 // preview builder; the stored thumbnail uses IMAGE_PREVIEW_MAX_DIMENSION.
 const onTheFlyPreviewDimension = 768
+
+// scenePreviewJPEGQuality matches the reference's novelviz preview encoder.
+const scenePreviewJPEGQuality = 82
 
 var (
 	sceneFilenameWhitespace = regexp.MustCompile(`\s+`)
@@ -56,17 +52,17 @@ func contentDisposition(filename string, inline bool) string {
 // the thumbnail once, at scene-success time, so ?preview=1 never resizes on the
 // request path (review P2-15).
 func (s *Service) buildScenePreviewFiles(content []byte, relativeOriginal string) (string, string) {
-	rendered, _ := decodeImage(content)
-	if rendered == nil {
+	rendered, err := decodeSceneImage(content)
+	if err != nil {
 		return "", "image/png"
 	}
-	resized := fitWithin(rendered, s.settings.previewMaxDimension)
-	hasAlpha := sourceHasAlpha(content)
+	resized := imageutil.Resize(rendered, s.settings.previewMaxDimension)
+	hasAlpha := imageutil.HasAlphaMode(content, rendered)
 	renderMime := "image/jpeg"
 	if hasAlpha {
 		renderMime = "image/png"
 	}
-	payload, err := encodePreview(resized, hasAlpha)
+	payload, err := encodeScenePreview(resized, hasAlpha)
 	if err != nil || len(payload) == 0 {
 		return "", "image/png"
 	}
@@ -88,123 +84,37 @@ func (s *Service) buildScenePreviewFiles(content []byte, relativeOriginal string
 
 // renderScenePreview mirrors views._build_scene_preview_content.
 func renderScenePreview(content []byte) ([]byte, string) {
-	rendered, _ := decodeImage(content)
-	if rendered == nil {
-		return content, "image/png"
-	}
-	resized := fitWithin(rendered, onTheFlyPreviewDimension)
-	if sourceHasAlpha(content) {
-		payload, err := encodePreview(resized, true)
-		if err != nil {
-			return content, "image/png"
-		}
-		return payload, "image/png"
-	}
-	payload, err := encodePreview(resized, false)
+	rendered, err := decodeSceneImage(content)
 	if err != nil {
 		return content, "image/png"
+	}
+	resized := imageutil.Resize(rendered, onTheFlyPreviewDimension)
+	hasAlpha := imageutil.HasAlphaMode(content, rendered)
+	payload, err := encodeScenePreview(resized, hasAlpha)
+	if err != nil {
+		return content, "image/png"
+	}
+	if hasAlpha {
+		return payload, "image/png"
 	}
 	return payload, "image/jpeg"
 }
 
-func decodeImage(content []byte) (image.Image, string) {
-	decoded, format, err := image.Decode(bytes.NewReader(content))
-	if err != nil {
-		return nil, ""
-	}
-	return decoded, format
-}
-
-func fitWithin(source image.Image, maxDimension int) image.Image {
-	if maxDimension < 1 {
-		maxDimension = 1
-	}
-	bounds := source.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	longest := width
-	if height > longest {
-		longest = height
-	}
-	if longest <= maxDimension {
-		return source
-	}
-	scale := float64(maxDimension) / float64(longest)
-	targetWidth := int(float64(width) * scale)
-	targetHeight := int(float64(height) * scale)
-	if targetWidth < 1 {
-		targetWidth = 1
-	}
-	if targetHeight < 1 {
-		targetHeight = 1
-	}
-	target := image.NewNRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	xdraw.CatmullRom.Scale(target, target.Bounds(), source, bounds, xdraw.Over, nil)
-	return target
-}
-
-func encodePreview(source image.Image, hasAlpha bool) ([]byte, error) {
-	buffer := &bytes.Buffer{}
+func encodeScenePreview(source image.Image, hasAlpha bool) ([]byte, error) {
 	if hasAlpha {
-		if err := png.Encode(buffer, source); err != nil {
-			return nil, err
-		}
-		return buffer.Bytes(), nil
+		return imageutil.EncodePNG(source, true)
 	}
-	if err := jpeg.Encode(buffer, source, &jpeg.Options{Quality: 82}); err != nil {
+	return imageutil.EncodeJPEG(source, scenePreviewJPEGQuality)
+}
+
+// decodeSceneImage decodes and applies the EXIF orientation the reference
+// applies before resizing, so a rotated photo renders the way its owner sees it.
+func decodeSceneImage(content []byte) (image.Image, error) {
+	decoded, _, err := imageutil.Decode(content)
+	if err != nil {
 		return nil, err
 	}
-	return buffer.Bytes(), nil
-}
-
-// sourceHasAlpha reproduces Pillow's mode check for the PNG inputs providers
-// return: RGBA/LA colour types, or a palette that carries transparency.
-func sourceHasAlpha(content []byte) bool {
-	if len(content) < 8 || !bytes.Equal(content[:8], []byte("\x89PNG\r\n\x1a\n")) {
-		return false
-	}
-	offset := 8
-	for offset+8 <= len(content) {
-		length := int(binary.BigEndian.Uint32(content[offset : offset+4]))
-		chunkType := string(content[offset+4 : offset+8])
-		if offset+12+length > len(content) {
-			return false
-		}
-		switch chunkType {
-		case "IHDR":
-			if length >= 10 {
-				switch content[offset+8+9] {
-				case 4, 6:
-					return true
-				case 3:
-					return hasTransparencyChunk(content)
-				}
-			}
-			return false
-		case "tRNS":
-			return true
-		}
-		offset += 12 + length
-	}
-	return false
-}
-
-func hasTransparencyChunk(content []byte) bool {
-	offset := 8
-	for offset+8 <= len(content) {
-		length := int(binary.BigEndian.Uint32(content[offset : offset+4]))
-		chunkType := string(content[offset+4 : offset+8])
-		if chunkType == "tRNS" {
-			return true
-		}
-		if chunkType == "IDAT" {
-			return false
-		}
-		if offset+12+length > len(content) {
-			return false
-		}
-		offset += 12 + length
-	}
-	return false
+	return imageutil.ApplyEXIFOrientation(content, decoded), nil
 }
 
 // readSceneFile loads a scene file from MEDIA_ROOT, rejecting any path that

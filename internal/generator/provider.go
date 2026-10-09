@@ -10,7 +10,6 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"image/jpeg"
 	"image/png"
 	"io"
 	"log/slog"
@@ -22,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/image/webp"
+	"mirror-studio/internal/imageutil"
 )
 
 // Provider request/response plumbing. The wire payloads are byte-compatible
@@ -826,11 +825,12 @@ func decodeReferenceDataURL(dataURL string) ([]byte, string) {
 // friendly, size limited payload: PNG when the image carries alpha, JPEG
 // otherwise.
 func normalizeReferenceForEdit(content []byte, mimeType string) ([]byte, string, string, error) {
-	source, err := decodeImageBytes(content)
+	source, _, err := imageutil.Decode(content)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("参考图解析失败")
 	}
-	if imageHasAlpha(source) {
+	source = imageutil.ApplyEXIFOrientation(content, source)
+	if imageutil.HasAlphaChannel(content, source) {
 		payload, outMime, suffix := savePNGWithLimit(source, editReferenceMaxBytes, editReferenceMaxDimension)
 		return payload, outMime, suffix, nil
 	}
@@ -838,97 +838,42 @@ func normalizeReferenceForEdit(content []byte, mimeType string) ([]byte, string,
 	return payload, outMime, suffix, nil
 }
 
-func decodeImageBytes(content []byte) (image.Image, error) {
-	source, _, err := image.Decode(bytes.NewReader(content))
-	if err == nil {
-		return source, nil
-	}
-	return webp.Decode(bytes.NewReader(content))
-}
-
-func imageHasAlpha(source image.Image) bool {
-	switch source.(type) {
-	case *image.RGBA, *image.NRGBA, *image.NRGBA64, *image.RGBA64, *image.Alpha, *image.Alpha16:
-		return true
-	case *image.Paletted:
-		palette := source.(*image.Paletted).Palette
-		for _, entry := range palette {
-			if _, _, _, alpha := entry.RGBA(); alpha < 0xffff {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func savePNGWithLimit(source image.Image, maxBytes, maxDimension int) ([]byte, string, string) {
-	current := resizeToLimit(source, maxDimension)
+	current := imageutil.Resize(source, maxDimension)
 	payload := []byte{}
 	for _, dimensionLimit := range []int{maxDimension, 1344, 1024, 768, 512} {
-		buffer := &bytes.Buffer{}
-		encoder := png.Encoder{CompressionLevel: png.BestCompression}
-		if err := encoder.Encode(buffer, current); err != nil {
+		encoded, err := imageutil.EncodePNG(current, true)
+		if err != nil {
 			return payload, "image/png", ".png"
 		}
-		payload = buffer.Bytes()
+		payload = encoded
 		if len(payload) <= maxBytes {
 			return payload, "image/png", ".png"
 		}
-		current = resizeToLimit(current, dimensionLimit)
+		current = imageutil.Resize(current, dimensionLimit)
 	}
 	return payload, "image/png", ".png"
 }
 
 func saveJPEGWithLimit(source image.Image, maxBytes, maxDimension int) ([]byte, string, string) {
-	candidate := resizeToLimit(source, maxDimension)
+	candidate := imageutil.Resize(source, maxDimension)
 	smallest := []byte{}
 	for _, dimensionLimit := range []int{maxDimension, 1344, 1152, 1024, 896, 768} {
 		for _, quality := range []int{88, 82, 76, 70, 64} {
-			buffer := &bytes.Buffer{}
-			if err := jpeg.Encode(buffer, candidate, &jpeg.Options{Quality: quality}); err != nil {
+			encoded, err := imageutil.EncodeJPEG(candidate, quality)
+			if err != nil {
 				return smallest, "image/jpeg", ".jpg"
 			}
-			payload := buffer.Bytes()
-			if len(smallest) == 0 || len(payload) < len(smallest) {
-				smallest = payload
+			if len(smallest) == 0 || len(encoded) < len(smallest) {
+				smallest = encoded
 			}
-			if len(payload) <= maxBytes {
-				return payload, "image/jpeg", ".jpg"
+			if len(encoded) <= maxBytes {
+				return encoded, "image/jpeg", ".jpg"
 			}
 		}
-		candidate = resizeToLimit(candidate, dimensionLimit)
+		candidate = imageutil.Resize(candidate, dimensionLimit)
 	}
 	return smallest, "image/jpeg", ".jpg"
-}
-
-// resizeToLimit scales an image down so its longest edge fits the limit while
-// the aspect ratio is preserved. Only the resulting dimensions are contractual,
-// never the encoded bytes.
-func resizeToLimit(source image.Image, maxDimension int) image.Image {
-	if maxDimension <= 0 {
-		return source
-	}
-	bounds := source.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	longest := width
-	if height > longest {
-		longest = height
-	}
-	if longest == 0 || longest <= maxDimension {
-		return source
-	}
-	scale := float64(maxDimension) / float64(longest)
-	targetWidth := maxInt(1, int(float64(width)*scale+0.5))
-	targetHeight := maxInt(1, int(float64(height)*scale+0.5))
-	target := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	for y := 0; y < targetHeight; y++ {
-		sourceY := bounds.Min.Y + y*height/targetHeight
-		for x := 0; x < targetWidth; x++ {
-			sourceX := bounds.Min.X + x*width/targetWidth
-			target.Set(x, y, source.At(sourceX, sourceY))
-		}
-	}
-	return target
 }
 
 func maxInt(left, right int) int {
@@ -954,13 +899,11 @@ func decodeAndValidateImage(content []byte, mimeType string) (int, int, bool) {
 	default:
 		return 0, 0, false
 	}
-	if config, _, err := image.DecodeConfig(bytes.NewReader(content)); err == nil {
-		return config.Width, config.Height, true
+	width, height := imageutil.DecodeConfig(content)
+	if width == 0 || height == 0 {
+		return 0, 0, false
 	}
-	if config, err := webp.DecodeConfig(bytes.NewReader(content)); err == nil {
-		return config.Width, config.Height, true
-	}
-	return 0, 0, false
+	return width, height, true
 }
 
 const (
