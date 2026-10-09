@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"mirror-studio/internal/imageutil"
+	"mirror-studio/internal/media"
 )
 
 // Provider request/response plumbing. The wire payloads are byte-compatible
@@ -68,13 +69,16 @@ func (e *providerRequestError) retryable() bool {
 
 // isRetryableError mirrors tasks.py `_is_retryable_error`: an upstream status
 // that is missing, >= 500, or one of the transient 4xx codes; any transport
-// error.
+// error. A remote-image fetch failure follows the same rule through its error
+// class — HTTPError and ConnectionError retry, the guard's rejections do not.
 func isRetryableError(err error) bool {
 	switch typed := err.(type) {
 	case *providerRequestError:
 		return typed.retryable()
 	case *transportFailure, *timeoutError:
 		return true
+	case *media.RemoteImageError:
+		return typed.Retryable()
 	}
 	return false
 }

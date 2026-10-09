@@ -26,6 +26,9 @@ type Config struct {
 	// SecureProxySSLHeaderValue is the X-Forwarded-Proto value that counts as
 	// "already secure" behind a proxy (SECURE_PROXY_SSL_HEADER's second half).
 	SecureProxySSLHeaderValue string
+	// CSRFTrustedOrigins is CSRF_TRUSTED_ORIGINS: exact origins the CSRF Origin
+	// check accepts beyond the request's own scheme://host.
+	CSRFTrustedOrigins []string
 
 	TimeZone string
 
@@ -124,6 +127,7 @@ type Config struct {
 	NovelvizTextReadTimeout  time.Duration
 	NovelvizSSEPollInterval  time.Duration
 	NovelvizStallRequeue     time.Duration
+	NovelvizUploadDir        string
 
 	// Console
 	ConsoleAPIRateLimit int
@@ -231,6 +235,7 @@ func Load() (*Config, error) {
 	cfg.TimeZone = envStr("TIME_ZONE", "Asia/Shanghai")
 	cfg.MediaRoot = envStr("MEDIA_ROOT", "media")
 	cfg.NovelvizBookDir = envStr("NOVELVIZ_BOOK_DIR", "novel")
+	cfg.NovelvizUploadDir = envStr("NOVELVIZ_UPLOAD_DIR", "novelviz/uploads")
 
 	if cfg.Debug, err = envBool("DEBUG", false); err != nil {
 		return nil, err
@@ -286,6 +291,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.SecureProxySSLHeaderValue = envStr("SECURE_PROXY_SSL_HEADER_VALUE", "https")
+	cfg.CSRFTrustedOrigins = envList("CSRF_TRUSTED_ORIGINS", nil)
 
 	cfg.SiteName = envStr("SITE_NAME", "绘镜 Studio")
 	cfg.BrandName = envStr("BRAND_NAME", "绘镜")

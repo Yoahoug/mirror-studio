@@ -74,6 +74,7 @@ func newTestEnv(t *testing.T, mutate ...func(*config.Config)) *testEnv {
 		ResumableUploadChunkSize:  8,
 		ResumableUploadSessionTTL: 24 * time.Hour,
 		NovelvizMaxEpubBytes:      80 * 1024 * 1024,
+		NovelvizUploadDir:         "novelviz/uploads",
 	}
 	for _, apply := range mutate {
 		apply(cfg)
@@ -1021,8 +1022,8 @@ func TestUploadSessionValidationMessages(t *testing.T) {
 	}{
 		{"kind", "unsupported", 10, "不支持的上传类型"},
 		{"zero", KindGenerationReferenceImage, 0, "上传文件不能为空"},
-		{"text", KindGenerationReferenceImage, "abc", "文件大小不合法"},
-		{"missing", KindGenerationReferenceImage, nil, "文件大小不合法"},
+		{"text", KindGenerationReferenceImage, "abc", "上传文件不能为空"},
+		{"missing", KindGenerationReferenceImage, nil, "上传文件不能为空"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

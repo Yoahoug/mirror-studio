@@ -312,15 +312,25 @@ func copyOrdered(value any) *orderedObject {
 }
 
 // exceptionTypeName reproduces the adapter/exception labels the reference stores
-// in provider_response_json.
+// in provider_response_json. A remote-fetch failure carries the exception class
+// tasks.py would have seen: requests.HTTPError for a bad status, and
+// requests.ConnectionError or TimeoutError for a transport failure.
 func exceptionTypeName(err error) string {
-	switch err.(type) {
+	switch typed := err.(type) {
 	case *providerRequestError:
 		return "ProviderRequestError"
 	case *timeoutError:
 		return "TimeoutError"
 	case *transportFailure:
 		return "ConnectionError"
+	case *media.RemoteImageError:
+		switch typed.Kind {
+		case media.RemoteHTTPError:
+			return "HTTPError"
+		case media.RemoteConnectionError:
+			return "ConnectionError"
+		}
+		return "ValueError"
 	}
 	return "ValueError"
 }

@@ -77,7 +77,9 @@ func (s *Service) CreateOrResumeUploadSession(
 	}
 	size, ok := coerceInt64(totalSize)
 	if !ok {
-		return nil, invalidValue("文件大小不合法")
+		// The reference's int() raises on a missing value too, and the view maps
+		// both the TypeError and the emptiness check to the same message.
+		return nil, invalidValue("上传文件不能为空")
 	}
 	if size <= 0 {
 		return nil, invalidValue("上传文件不能为空")
@@ -521,7 +523,7 @@ func (s *Service) completeNovelEPUBUpload(
 		return nil, invalidValue("EPUB 文件不能超过 %d MB", maxBytes/1024/1024)
 	}
 
-	relativePath := path.Join(novelUploadRootDir, "users", strconv.FormatInt(session.UserID, 10),
+	relativePath := path.Join(s.cfg.NovelvizUploadDir, "users", strconv.FormatInt(session.UserID, 10),
 		randomHex(32)+"-"+displayName)
 	root := filepath.Clean(s.cfg.MediaRoot)
 	absolute := filepath.Join(root, filepath.FromSlash(relativePath))

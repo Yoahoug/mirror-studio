@@ -323,6 +323,47 @@ func VerifyCSRF(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(requestToken), []byte(material.Secret)) == 1
 }
 
+// VerifyCSRFOrigin ports Django's Origin/Referer check (csrf.py
+// _origin_verified + _check_referer): an Origin header must equal
+// scheme://host of the request or an entry of the trusted list; a secure
+// request without Origin must present a same-host Referer. isSecure reports
+// whether the request arrived over https (socket or trusted proxy header),
+// and host is the request's Host header.
+func VerifyCSRFOrigin(r *http.Request, trustedOrigins []string, isSecure bool) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" {
+		if host := r.Host; host != "" {
+			scheme := "http"
+			if isSecure {
+				scheme = "https"
+			}
+			if origin == scheme+"://"+host {
+				return true
+			}
+		}
+		for _, trusted := range trustedOrigins {
+			if origin == strings.TrimRight(strings.TrimSpace(trusted), "/") {
+				return true
+			}
+		}
+		return false
+	}
+	if !isSecure {
+		return true
+	}
+	// No Origin on an https request: Django requires a Referer whose host
+	// matches the request host.
+	referer := strings.TrimSpace(r.Header.Get("Referer"))
+	if referer == "" {
+		return false
+	}
+	parsed, err := url.Parse(referer)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
+}
+
 // ── helpers shared with form handling ──
 
 // ErrRequestTooBig reports a body larger than DATA_UPLOAD_MAX_MEMORY_SIZE.

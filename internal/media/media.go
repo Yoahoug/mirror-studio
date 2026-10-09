@@ -40,7 +40,6 @@ const (
 
 const (
 	resumableUploadRootDir = "uploads/resumable"
-	novelUploadRootDir     = "novelviz/uploads"
 	referenceUploadToken   = "generator.reference-upload"
 	previewSignerSalt      = ":mediahub-preview"
 	downloadTokenMaxAge    = 300 * time.Second

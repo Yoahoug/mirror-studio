@@ -10,9 +10,43 @@ import (
 	"strings"
 )
 
+// RemoteImageError distinguishes the failure classes the reference's
+// fetch_remote_image raises so the worker can retry the way tasks.py
+// _is_retryable_error does: an HTTP error (bad status) and a connection error
+// are retryable, a rejection by the guard (bad URL, non-global address, size
+// cap, wrong content) is not.
+type RemoteImageError struct {
+	Kind    RemoteImageErrorKind
+	Message string
+}
+
+// RemoteImageErrorKind labels the failure class.
+type RemoteImageErrorKind int
+
+const (
+	// RemoteHTTPError is a completed response with a 4xx/5xx status
+	// (requests.HTTPError).
+	RemoteHTTPError RemoteImageErrorKind = iota
+	// RemoteConnectionError is a transport failure (requests.ConnectionError /
+	// requests.Timeout).
+	RemoteConnectionError
+	// RemoteGuardError is a rejection before or during the download that a
+	// retry cannot fix (bad URL, blocked address, size, content type).
+	RemoteGuardError
+)
+
+// Error returns the user-facing message.
+func (e *RemoteImageError) Error() string { return e.Message }
+
+// Retryable reports the classification tasks.py would produce for this error.
+func (e *RemoteImageError) Retryable() bool {
+	return e.Kind == RemoteHTTPError || e.Kind == RemoteConnectionError
+}
+
 // FetchRemoteImage downloads a provider result with the reference's SSRF guard:
 // an exact-hostname allow list, an address check on every hop, manual redirects
-// and a hard byte cap. It returns the bytes and the detected mime type.
+// and a hard byte cap. It returns the bytes and the detected mime type. Every
+// failure comes back as *RemoteImageError so the caller can retry by class.
 func (s *Service) FetchRemoteImage(ctx context.Context, rawURL string) ([]byte, string, error) {
 	current, err := s.validateRemoteImageURL(ctx, rawURL)
 	if err != nil {
@@ -24,16 +58,16 @@ func (s *Service) FetchRemoteImage(ctx context.Context, rawURL string) ([]byte, 
 	}
 	parsed, err := url.Parse(current)
 	if err != nil {
-		return nil, "", errors.New("远程图片地址不合法")
+		return nil, "", guardError("远程图片地址不合法")
 	}
 	for hop := 0; hop <= remoteRedirectLimit; hop++ {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 		if err != nil {
-			return nil, "", err
+			return nil, "", guardError("远程图片地址不合法")
 		}
 		response, err := client.Do(request)
 		if err != nil {
-			return nil, "", err
+			return nil, "", connectionError(err.Error())
 		}
 		location := strings.TrimSpace(response.Header.Get("Location"))
 		if isRedirectStatus(response.StatusCode) && location != "" {
@@ -47,7 +81,7 @@ func (s *Service) FetchRemoteImage(ctx context.Context, rawURL string) ([]byte, 
 		}
 		return readRemoteImageBody(response, s.cfg.MaxRemoteImageBytes)
 	}
-	return nil, "", errors.New("远程图片重定向次数过多")
+	return nil, "", guardError("远程图片重定向次数过多")
 }
 
 // resolveRedirect validates a redirect target before it is followed.
@@ -77,28 +111,31 @@ func isRedirectStatus(status int) bool {
 func (s *Service) validateRemoteImageURL(ctx context.Context, rawURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
-		return "", errors.New("远程图片地址不合法")
+		return "", guardError("远程图片地址不合法")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", errors.New("远程图片地址不合法")
+		return "", guardError("远程图片地址不合法")
 	}
 	if parsed.Host == "" {
-		return "", errors.New("远程图片地址不合法")
+		return "", guardError("远程图片地址不合法")
 	}
 	hostname := strings.ToLower(parsed.Hostname())
 	if hostname == "" {
-		return "", errors.New("远程图片地址不合法")
+		return "", guardError("远程图片地址不合法")
 	}
 	if s.remoteAllowedHosts()[hostname] {
 		return parsed.String(), nil
 	}
+	// The reference resolves through getaddrinfo; a resolution failure is a
+	// ConnectionError and retries, the same way requests reports an
+	// unresolvable host.
 	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
 	if err != nil || len(addresses) == 0 {
-		return "", errors.New("远程图片地址解析失败")
+		return "", connectionError("远程图片地址解析失败")
 	}
 	for _, address := range addresses {
 		if !isGlobalIP(address.IP) {
-			return "", errors.New("远程图片地址禁止访问内网主机")
+			return "", guardError("远程图片地址禁止访问内网主机")
 		}
 	}
 	return parsed.String(), nil
@@ -191,7 +228,7 @@ func isGlobalIP(ip net.IP) bool {
 func readRemoteImageBody(response *http.Response, maxBytes int64) ([]byte, string, error) {
 	defer response.Body.Close()
 	if response.StatusCode >= 400 {
-		return nil, "", errors.New("远程图片请求失败")
+		return nil, "", &RemoteImageError{Kind: RemoteHTTPError, Message: "远程图片请求失败"}
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.SplitN(response.Header.Get("Content-Type"), ";", 2)[0]))
 	reader := io.Reader(response.Body)
@@ -200,19 +237,27 @@ func readRemoteImageBody(response *http.Response, maxBytes int64) ([]byte, strin
 	}
 	content, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, "", err
+		return nil, "", connectionError(err.Error())
 	}
 	if maxBytes > 0 && int64(len(content)) > maxBytes {
-		return nil, "", errors.New("远程图片超过大小限制")
+		return nil, "", guardError("远程图片超过大小限制")
 	}
 	if sniffed := sniffImageMIME(content); sniffed != "" {
 		contentType = sniffed
 	}
 	if !strings.HasPrefix(contentType, "image/") {
-		return nil, "", errors.New("远程地址未返回图片内容")
+		return nil, "", guardError("远程地址未返回图片内容")
 	}
 	if contentType == "" {
 		contentType = "image/png"
 	}
 	return content, contentType, nil
+}
+
+func guardError(message string) error {
+	return &RemoteImageError{Kind: RemoteGuardError, Message: message}
+}
+
+func connectionError(message string) error {
+	return &RemoteImageError{Kind: RemoteConnectionError, Message: message}
 }

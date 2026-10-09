@@ -167,7 +167,8 @@ func run() error {
 		ResolveUser: func(ctx context.Context, userID int64) (httpapi.Principal, error) {
 			return authService.ResolvePrincipal(ctx, userID)
 		},
-		IPBlocked: riskService.IPBlocked,
+		IPBlocked:      riskService.IPBlocked,
+		TrustedOrigins: cfg.CSRFTrustedOrigins,
 	}, httpapi.NewRouter(mux))
 	middleware.Static = httpapi.NewStaticHandler(assets, "static")
 	middleware.RateLimiter = riskService.Counters().Increment

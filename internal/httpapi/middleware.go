@@ -65,6 +65,9 @@ type Options struct {
 	ResolveUser func(ctx context.Context, userID int64) (Principal, error)
 	IPBlocked   func(ctx context.Context, ip string) (bool, string)
 	OnRequestIP func(ctx context.Context, ip string)
+	// TrustedOrigins is CSRF_TRUSTED_ORIGINS: exact origins the Origin check
+	// accepts in addition to the request's own scheme://host.
+	TrustedOrigins []string
 }
 
 const maxBodyBytes = 4 * 1024 * 1024 // DATA_UPLOAD_MAX_MEMORY_SIZE default
@@ -213,9 +216,12 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// CSRF check for unsafe methods, after the guards so a blocked caller never
-	// reaches it.
+	// reaches it. The token check runs first, then the Origin/Referer check
+	// Django layers on top (csrf.py rejects a bad Origin before the token is
+	// even looked at; keeping both produces the same accept/reject set).
 	if !isSafeMethod(r.Method) && !pathHasPrefix(path, "/static/") {
-		if !VerifyCSRF(r) {
+		isSecure := requestIsSecure(r, cfg.SecureProxySSLHeaderValue)
+		if !VerifyCSRF(r) || !VerifyCSRFOrigin(r, m.options.TrustedOrigins, isSecure) {
 			m.csrfFailure(writer, r)
 			return
 		}
