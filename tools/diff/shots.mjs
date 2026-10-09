@@ -413,10 +413,13 @@ async function capturePage(tab, page, { baseUrl, outDirArg, outDirAbs, settleMs 
   await tab.playwright.waitForLoadState({ state: "domcontentloaded" });
   await tab.playwright.waitForLoadState({ state: "load" }).catch(() => {});
 
-  let settled = true;
-  if (page.settle === "workspace") settled = await settleWorkspace(tab);
-  else if (page.settle === "console") settled = await settleConsole(tab);
-  else await settleGeneric(tab, { settleMs });
+  const settle = async () => {
+    if (page.settle === "workspace") return settleWorkspace(tab);
+    if (page.settle === "console") return settleConsole(tab);
+    await settleGeneric(tab, { settleMs });
+    return true;
+  };
+  let settled = await settle();
 
   // SPA overlays (the release-notes dialog, first-run banners) depend on
   // localStorage and would make otherwise identical pages differ between runs.
@@ -426,7 +429,12 @@ async function capturePage(tab, page, { baseUrl, outDirArg, outDirAbs, settleMs 
   const status = await documentStatus(tab, url);
   const finalUrl = await tab.url();
   const fileAbs = join(outDirAbs, `${page.name}.png`);
-  const bytes = toPngBuffer(await tab.screenshot({ fullPage: false }));
+  // The browser backend occasionally fails to produce a frame even though the
+  // page is fully loaded and its DOM carries text: the screenshot then either
+  // times out or returns a blank surface. Re-navigate and retry, and never write
+  // a frame that is blank while the DOM has text — an unrendered capture must
+  // fail loudly instead of being compared as if it were a real difference.
+  const bytes = toPngBuffer(await captureFrames(tab, { name: page.name, url, settle }));
   await writeFile(fileAbs, bytes);
 
   const size = pngSize(bytes);
@@ -445,6 +453,55 @@ async function capturePage(tab, page, { baseUrl, outDirArg, outDirAbs, settleMs 
   return { status, file: join(outDirArg, `${page.name}.png`), settled };
 }
 
+
+/**
+ * A 1280x900 PNG of a page that actually rendered is far larger than this; a
+ * blank surface compresses to a few kilobytes. The threshold is only ever
+ * consulted together with "does the DOM have text", so a legitimately empty page
+ * is never rejected.
+ */
+const BLANK_FRAME_BYTES = 20 * 1024;
+
+async function domHasVisibleText(tab) {
+  try {
+    return await tab.playwright.evaluate(
+      `(() => { const body = document.body; return !!body && (body.innerText || '').trim().length > 0; })()`,
+    );
+  } catch (error) {
+    log(`dom text probe failed: ${error?.message ?? error}`);
+    return false;
+  }
+}
+
+async function captureFrames(tab, { name, url, settle, attempts = 3 }) {
+  let blank = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const bytes = await tab.screenshot({ fullPage: false });
+      if (bytes.length >= BLANK_FRAME_BYTES || !(await domHasVisibleText(tab))) {
+        if (attempt > 1) log(`${name}: captured a rendered frame on attempt ${attempt}`);
+        return bytes;
+      }
+      blank = bytes;
+      log(
+        `${name}: attempt ${attempt} returned a blank frame (${bytes.length} bytes) ` +
+          `while the DOM has text; re-navigating and retrying`,
+      );
+    } catch (error) {
+      log(`${name}: screenshot attempt ${attempt} failed (${error?.message ?? error})`);
+    }
+    if (attempt < attempts) {
+      // A retry that reuses the same document keeps hitting the same stuck
+      // compositor, so reload the page and let it settle again.
+      await tab.goto(url).catch(() => {});
+      await tab.playwright.waitForLoadState({ state: "domcontentloaded" }).catch(() => {});
+      await settle().catch(() => {});
+      await dismissOverlays(tab);
+    }
+  }
+  if (blank) throw new Error(`${name}: every attempt produced a blank frame while the DOM has text`);
+  throw new Error(`${name}: no frame could be captured in ${attempts} attempts`);
+}
 
 /**
  * Closes known first-run overlays so the captured pixels do not depend on
