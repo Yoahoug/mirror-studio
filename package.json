@@ -2,7 +2,6 @@
   "name": "consumer-image-platform",
   "private": true,
   "scripts": {
-    "bundle:update": "python3 scripts/make_update_zip.py",
     "build": "npm run build:css && npm run build:workspace && npm run build:console && npm run build:ssr",
     "build:css": "tailwindcss -i ./static_src/css/tailwind.css -o ./static/css/main.css --minify",
     "build:workspace": "vite build --config frontend/workspace/vite.config.ts",
