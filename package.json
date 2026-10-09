@@ -3,12 +3,39 @@
   "private": true,
   "scripts": {
     "bundle:update": "python3 scripts/make_update_zip.py",
+    "build": "npm run build:css && npm run build:workspace && npm run build:console && npm run build:ssr",
     "build:css": "tailwindcss -i ./static_src/css/tailwind.css -o ./static/css/main.css --minify",
+    "build:workspace": "vite build --config frontend/workspace/vite.config.ts",
+    "build:console": "vite build --config frontend/console/vite.config.ts",
+    "build:ssr": "echo SSR pages are served from templates/ with static/css/main.css produced by build:css",
+    "dev:workspace": "vite --config frontend/workspace/vite.config.ts --port=3000 --host=0.0.0.0",
+    "dev:console": "vite --config frontend/console/vite.config.ts --port=3001 --host=0.0.0.0",
+    "lint": "tsc --noEmit -p frontend/tsconfig.json",
     "watch:css": "tailwindcss -i ./static_src/css/tailwind.css -o ./static/css/main.css --watch"
   },
+  "dependencies": {
+    "@google/genai": "^1.29.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@vitejs/plugin-react": "^5.0.4",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.1",
+    "remark-gfm": "^4.0.1",
+    "vite": "^6.2.0"
+  },
   "devDependencies": {
-    "autoprefixer": "^10.5.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "autoprefixer": "^10.4.21",
     "postcss": "^8.5.10",
-    "tailwindcss": "^3.4.17"
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2"
   }
 }
