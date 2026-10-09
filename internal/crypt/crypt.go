@@ -40,12 +40,21 @@ func b64Decode(value string) ([]byte, error) {
 
 const fernetVersion = 0x80
 
-// DeriveFernetKey reproduces the reference key derivation: a 44-character
-// urlsafe base64 key is used as-is, anything else is hashed with SHA-256 first.
+// DeriveFernetKey reproduces the reference key derivation and returns the
+// *encoded* 44-character key both implementations feed to Fernet:
+//
+//   - a 44-character urlsafe base64 key that decodes to 32 bytes is already a
+//     Fernet key and is used verbatim (python's `Fernet(key.encode())`);
+//   - anything else is hashed with SHA-256 and base64-encoded
+//     (`Fernet(base64.urlsafe_b64encode(sha256(key).digest()))`).
+//
+// Returning the decoded bytes for the first case would be wrong: the caller
+// would then hash an already-canonical key a second time and derive a key the
+// reference cannot reproduce.
 func DeriveFernetKey(raw string) []byte {
 	if len(raw) == 44 {
 		if decoded, err := base64.URLEncoding.DecodeString(raw); err == nil && len(decoded) == 32 {
-			return decoded
+			return []byte(raw)
 		}
 	}
 	sum := sha256.Sum256([]byte(raw))
@@ -59,10 +68,6 @@ type fernetCipher struct {
 
 func newFernet(rawKey string) (*fernetCipher, error) {
 	derived := DeriveFernetKey(rawKey)
-	if len(derived) != 44 {
-		sum := sha256.Sum256(derived)
-		derived = []byte(base64.URLEncoding.EncodeToString(sum[:]))
-	}
 	decoded, err := base64.URLEncoding.DecodeString(string(derived))
 	if err != nil {
 		return nil, fmt.Errorf("invalid FIELD_CRYPT_KEY: %w", err)
@@ -154,13 +159,11 @@ func pkcs7Unpad(data []byte, size int) ([]byte, error) {
 
 // FieldCipher encrypts and decrypts values that live in the database.
 //
-// Ciphertexts written by 0.0.1 carry a "v1:" prefix so the key generation is
-// identifiable; unprefixed values produced by 1.x are still readable.
+// The stored form is exactly the reference's: a bare Fernet token, no wrapper,
+// so a value written by either implementation is readable by the other.
 type FieldCipher struct {
 	fernet *fernetCipher
 }
-
-const fieldCipherVersionPrefix = "v1:"
 
 // NewFieldCipher builds a cipher from FIELD_CRYPT_KEY. An empty key is a hard
 // error: silently storing plaintext is exactly the defect 0.0.1 removes.
@@ -184,7 +187,7 @@ func (c *FieldCipher) Encrypt(plaintext string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fieldCipherVersionPrefix + token, nil
+	return token, nil
 }
 
 // Decrypt returns "" for an empty value. A value that cannot be decrypted
@@ -193,8 +196,7 @@ func (c *FieldCipher) Decrypt(value string) (string, error) {
 	if value == "" {
 		return "", nil
 	}
-	payload := strings.TrimPrefix(value, fieldCipherVersionPrefix)
-	plain, err := c.fernet.decrypt(payload)
+	plain, err := c.fernet.decrypt(value)
 	if err != nil {
 		return "", fmt.Errorf("decrypt stored value: %w", err)
 	}

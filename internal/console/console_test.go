@@ -656,8 +656,12 @@ func TestConfigPutThenGetRoundTripAndSecretMasking(t *testing.T) {
 	if err := h.db.QueryRow(`SELECT value_encrypted FROM core_siteconfig WHERE key = ?`, "custom.secret").Scan(&stored); err != nil {
 		t.Fatalf("load stored value: %v", err)
 	}
-	if stored == secretValue || !strings.HasPrefix(stored, "v1:") {
+	// The stored form is a bare Fernet token, exactly what the reference writes.
+	if stored == secretValue || !strings.HasPrefix(stored, "gAAAAA") {
 		t.Fatalf("secret is not encrypted at rest: %q", stored)
+	}
+	if strings.Contains(stored, ":") {
+		t.Fatalf("stored value carries a wrapper the reference does not write: %q", stored)
 	}
 	plain, err := h.cipher.Decrypt(stored)
 	if err != nil {
