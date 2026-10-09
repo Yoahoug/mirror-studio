@@ -25,3 +25,6 @@ frontend/console/dist
 frontend/console/tsconfig.tsbuildinfo
 output
 references
+.reftmp
+.venv-ref
+tools/diff
