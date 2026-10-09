@@ -49,17 +49,43 @@ REFERENCE_TOKEN_RE = re.compile(r"\b[A-Za-z0-9_\-=]{6,}:1:[A-Za-z0-9_\-=:]+")
 SVG_DATA_URI_RE = re.compile(r"data:image/svg\+xml;base64,[A-Za-z0-9+/=]+")
 DATA_CAPTCHA_ATTR_RE = re.compile(r'data-captcha="[^"]*"')
 DATA_CSRF_ATTR_RE = re.compile(r'data-csrf="[^"]*"')
+# The in-app release notes payload is version metadata sourced from CHANGELOG.md;
+# the markup around it is compared, the payload itself is not.
+RELEASE_DATA_RE = re.compile(
+    r'<script id="workspace-release-data" type="application/json">.*?</script>', re.S
+)
+# The stored reference-image object key embeds a per-run task number
+# (users/<uid>/tasks/R<timestamp><random>/reference.png), not implementation output.
+REFERENCE_OBJECT_KEY_RE = re.compile(r"/tasks/R\d{8,}/")
+# Tail of a timestamped signed value: ":1<base62 timestamp>:<base64url signature>".
+# The signature covers the payload, which embeds per-run values, so it differs
+# between two correct runs by construction. The payload itself stays comparable.
+SIGNED_TAIL_RE = re.compile(r":1[A-Za-z0-9]{3,}:[A-Za-z0-9_\-=]+")
 CSRF_INPUT_RE = re.compile(r'name="csrfmiddlewaretoken" value="[^"]*"')
 # Mirrors the expression the SPA uses to recognise a CSRF rejection.
 CSRF_FAILURE_RE = re.compile(r"csrf|CSRF|CSRF验证失败|CSRF 验证失败|403")
 
 # JSON keys whose value is entropy by construction; masked whatever the format.
+# Site-config rows whose value the rewrite sources from CHANGELOG.md / VERSION
+# instead of from hardcoded settings. The keys must still exist and be compared;
+# only the payload is a mandated difference.
+MANDATED_CONFIG_KEYS = {
+    "site.workspace_release_version",
+    "site.workspace_release_title",
+    "site.workspace_release_notes",
+    "site.workspace_release_published_at",
+}
+
 MASK_JSON_KEYS = {
     "csrf_token",
     "captcha_code",
     "captcha_svg",
     "reference_upload_token",
     "token",
+    # The stored image size depends on which image encoder produced the bytes
+    # (Pillow in the reference, image/png in the rewrite). It is masked in the
+    # snapshot table already; the API surfaces the same column.
+    "file_size",
 }
 
 # Table columns holding values that differ between two correct runs.
@@ -97,7 +123,6 @@ SNAPSHOT_TABLES = (
     "risk_ipaccessrule",
     "risk_riskevent",
     "risk_sensitivewordrule",
-    "audit_adminoperationlog",
     "audit_callbackeventlog",
     "core_siteconfig",
 )
@@ -109,6 +134,19 @@ SNAPSHOT_TABLES = (
 TABLE_COLUMN_MASKS = {
     "mediahub_generatedimage": {"sha256": "<sha256>", "file_size": "<size>"},
     "novelviz_noveluploadedbook": {"sha256": "<sha256>"},
+    "core_siteconfig": {"id": "<config-id>"},
+    # Password hashes and Fernet ciphertexts are salted/randomised by
+    # construction, so two correct runs never produce the same bytes. Login and
+    # channel dispatch are verified through the HTTP trace instead.
+    "users_user": {"password": "<password-hash>"},
+    "generator_imagechannel": {"api_key_encrypted": "<ciphertext>"},
+}
+
+# Configuration rows whose feature the rewrite deletes outright (the 不移植
+# list), so neither stack is expected to agree on them.
+NON_PORTED_CONFIG_KEYS = {
+    "site.release_push_key",
+    "site.release_push_secret",
 }
 
 
@@ -144,6 +182,12 @@ class Normalizer:
         for match in set(HEX16_RE.findall(text)):
             text = text.replace(match, self.placeholder("hex16", match))
         text = MOCK_REQUEST_ID_RE.sub("mock-<taskno>", text)
+        text = REFERENCE_OBJECT_KEY_RE.sub("/tasks/R<taskno>/", text)
+        text = SIGNED_TAIL_RE.sub(":1<ts>:<sig>", text)
+        text = RELEASE_DATA_RE.sub(
+            '<script id="workspace-release-data" type="application/json"><release></script>',
+            text,
+        )
         return text
 
     def value(self, value, key: str = ""):
@@ -152,9 +196,27 @@ class Normalizer:
         if isinstance(value, str):
             return self.apply(value)
         if isinstance(value, list):
-            return [self.value(item) for item in value]
+            # Configuration rows for features the rewrite deletes outright are
+            # dropped from both sides rather than compared.
+            return [
+                self.value(item)
+                for item in value
+                if not (
+                    isinstance(item, dict)
+                    and item.get("key") in NON_PORTED_CONFIG_KEYS
+                    and "is_secret" in item
+                )
+            ]
         if isinstance(value, dict):
-            return {name: self.value(item, name) for name, item in value.items()}
+            cleaned = {name: self.value(item, name) for name, item in value.items()}
+            if cleaned.get("key") in MANDATED_CONFIG_KEYS:
+                cleaned["value"] = "<mandated>"
+            if {"key", "is_secret", "category"} <= cleaned.keys():
+                # A site-config row: its id is an autoincrement value from a seed
+                # sequence the rewrite shortens by the rows it deletes. The SPA
+                # addresses these rows by `key`, never by id.
+                cleaned["id"] = "<config-id>"
+            return cleaned
         return value
 
 
@@ -449,9 +511,13 @@ def snapshot_database(db_path: Path, normalizer: Normalizer) -> dict:
     snapshot: dict[str, object] = {}
     for table in SNAPSHOT_TABLES:
         try:
+            # core_siteconfig is compared keyed: its rowid order is the seeder's
+            # insertion order, and the two release-push rows the rewrite deletes
+            # would shift every later row.
+            order_by = "key" if table == "core_siteconfig" else "rowid"
             rows = [
                 dict(row)
-                for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid")
+                for row in connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}")
             ]
         except sqlite3.OperationalError as exc:
             snapshot[table] = {"__error__": str(exc)}
@@ -459,6 +525,10 @@ def snapshot_database(db_path: Path, normalizer: Normalizer) -> dict:
         masks = TABLE_COLUMN_MASKS.get(table, {})
         cleaned = []
         for row in rows:
+            if table == "core_siteconfig" and row["key"] in NON_PORTED_CONFIG_KEYS:
+                continue
+            if table == "core_siteconfig" and row["key"] in MANDATED_CONFIG_KEYS:
+                row = {**row, "value_encrypted": "<mandated>"}
             item = {}
             for key, value in row.items():
                 if key in masks and value is not None:

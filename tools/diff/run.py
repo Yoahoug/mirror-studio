@@ -279,9 +279,13 @@ def main() -> int:
         }
     else:
         command = [str(GO_BINARY), "--listen", f"127.0.0.1:{BACKEND_PORT}"]
+        # The reference target runs config.settings.dev, so the Go target runs
+        # with the same dev flag: debug asset tags, non-Secure cookies and no
+        # HSTS, exactly like the reference.
         base = {
             **COMMON_ENV,
             "APP_PORT": str(BACKEND_PORT),
+            "DEBUG": "1",
             "GENERATION_WORKER_POLL_SECONDS": "1",
             "GENERATION_WORKER_CONCURRENCY": "2",
         }

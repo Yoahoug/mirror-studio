@@ -399,9 +399,11 @@ class Corpus:
                 headers=self.as_ip("198.51.100.8"),
             )
             # Task frequency limit: the generator phase already consumed the
-            # window, so the first probe passes and the second is refused.
+            # window, so the first probe passes and the second is refused. The
+            # probes go through generation_create so the accepted one is recorded
+            # in its settled state, like every other create in this corpus.
             for _ in range(2):
-                self.client.post("/api/generate/tasks", json_body={"prompt": "频率限制探测"})
+                self.generation_create({"prompt": "频率限制探测"})
 
     def phase_media(self) -> None:
         with with_label(self.client, "media"):
@@ -568,8 +570,10 @@ class Corpus:
             )
             uploaded_task_id = uploaded_task.json()["data"]["id"]
             uploaded_settled = self.settle(f"/api/novelviz/tasks/{uploaded_task_id}", terminal=TERMINAL_NOVEL)
-            detail = self.client.get(f"/api/novelviz/tasks/{uploaded_task_id}")
+            # record_terminal rewrites the last recorded step, so it has to run
+            # before the detail GET below.
             self.record_terminal(uploaded_settled or uploaded_task.json()["data"])
+            detail = self.client.get(f"/api/novelviz/tasks/{uploaded_task_id}")
             self.artifacts["uploaded_novel_task"] = uploaded_settled
             self.client.delete(f"/api/novelviz/tasks/{uploaded_task_id}")
             self.client.get("/api/novelviz/tasks")
