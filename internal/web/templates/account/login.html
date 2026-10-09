@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}登录 - {{ SITE_NAME }}{% endblock %}
+
+{% block content %}
+<section class="site-shell py-16">
+  <div class="mx-auto max-w-md panel p-8">
+    <h1 class="text-2xl font-semibold text-slate-950">登录</h1>
+    <p class="mt-2 text-sm text-slate-500">登录后可进入生图工作台，继续创作并查看历史结果。</p>
+    <form class="mt-6 space-y-4" method="post">
+      {% csrf_token %}
+      {% if request.GET.next %}
+      <input type="hidden" name="next" value="{{ request.GET.next }}">
+      {% endif %}
+      {{ form.non_field_errors }}
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">账号</label>
+        {{ form.username }}
+        {{ form.username.errors }}
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">密码</label>
+        {{ form.password }}
+        {{ form.password.errors }}
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">验证码</label>
+        {% include "account/_captcha_preview.html" %}
+        {{ form.captcha_code }}
+        {{ form.captcha_code.errors }}
+      </div>
+      <button class="btn-primary w-full" type="submit">登录</button>
+    </form>
+    <div class="mt-4 flex items-center justify-between text-sm text-slate-500">
+      <a href="/workspace?auth=register">去注册</a>
+      <a href="/forgot-password">忘记密码</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>安全设置 - 绘镜 Studio</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+      /* ── ArtMirror Design Language Override ── */
+      :root {
+        --am-bg: #f9fafb;
+        --am-surface: rgba(255,255,255,0.85);
+        --am-border: #e5e7eb;
+        --am-primary: #1a1a1a;
+        --am-muted: #6b7280;
+        --am-radius: 1.5rem;
+        --am-radius-sm: 1rem;
+      }
+
+      body {
+        font-family: "Inter", "Nunito Sans", "Noto Sans SC", sans-serif !important;
+        background: var(--am-bg) !important;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      h1, h2, h3, h4, .font-display {
+        font-family: "Inter", "Rubik", "Noto Sans SC", sans-serif !important;
+        letter-spacing: -0.025em;
+      }
+
+      /* Nav overrides */
+      .nav-card {
+        border-radius: 2rem !important;
+        border: 1px solid rgba(255,255,255,0.6) !important;
+        background: var(--am-surface) !important;
+        backdrop-filter: blur(24px) !important;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.06) !important;
+      }
+
+      .brand-mark {
+        background: var(--am-primary) !important;
+        border-radius: var(--am-radius-sm) !important;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.12) !important;
+      }
+
+      .nav-link {
+        font-weight: 600;
+        border-radius: 9999px;
+        transition: all 0.2s;
+      }
+
+      .nav-link:hover {
+        background: rgba(0,0,0,0.04) !important;
+        color: var(--am-primary) !important;
+      }
+
+      /* Panel / Card overrides */
+      .panel {
+        border-radius: var(--am-radius) !important;
+        border: 1px solid var(--am-border) !important;
+        background: var(--am-surface) !important;
+        backdrop-filter: blur(12px) !important;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.04) !important;
+        transition: box-shadow 0.2s, transform 0.2s;
+      }
+
+      .panel:hover {
+        box-shadow: 0 8px 32px rgba(0,0,0,0.08) !important;
+      }
+
+      /* Button overrides */
+      .btn-primary {
+        background: var(--am-primary) !important;
+        border-radius: var(--am-radius-sm) !important;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.12) !important;
+        font-weight: 700;
+        transition: all 0.2s;
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(0,0,0,0.16) !important;
+      }
+
+      .btn-secondary {
+        border-radius: var(--am-radius-sm) !important;
+        border: 1px solid var(--am-border) !important;
+        background: white !important;
+        font-weight: 600;
+        transition: all 0.2s;
+      }
+
+      .btn-secondary:hover {
+        border-color: var(--am-primary) !important;
+        color: var(--am-primary) !important;
+        transform: translateY(-2px);
+      }
+
+      /* Table overrides */
+      table thead {
+        background: var(--am-bg) !important;
+      }
+
+      table th {
+        font-size: 0.7rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--am-muted);
+      }
+
+      table td {
+        font-size: 0.875rem;
+      }
+
+      table tbody tr {
+        transition: background 0.15s;
+      }
+
+      table tbody tr:hover {
+        background: rgba(0,0,0,0.02);
+      }
+
+      /* Footer overrides */
+      footer .flex {
+        border-radius: var(--am-radius) !important;
+      }
+
+      /* Price card overrides */
+      .price-card {
+        border-radius: var(--am-radius) !important;
+        border: 1px solid var(--am-border) !important;
+      }
+
+      .price-card:hover {
+        border-color: var(--am-primary) !important;
+      }
+
+      .price-card--featured {
+        background: var(--am-primary) !important;
+        border-color: transparent !important;
+      }
+
+      /* Scrollbar – match ArtMirror */
+      ::-webkit-scrollbar { width: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
+
+      /* Background orbs – softer for ArtMirror style */
+      .page-orb { opacity: 0.4; }
+
+      .page-frame {
+        background: var(--am-bg) !important;
+      }
+    </style>
+    
+  </head>
+  <body class="page-frame">
+    <div class="page-orb left-[-8rem] top-16 h-64 w-64 bg-brand-100/90"></div>
+    <div class="page-orb right-[-7rem] top-40 h-72 w-72 bg-cyan-200/70"></div>
+    <div class="page-orb bottom-[-8rem] left-[26%] h-72 w-72 bg-orange-100/80"></div>
+    <header class="nav-shell">
+      <div class="nav-card">
+        <div class="site-shell flex min-h-[78px] items-center justify-between gap-6">
+          <a class="brand-lockup" href="/">
+            <span class="brand-mark">HJ</span>
+            <span class="brand-copy">
+              <span class="brand-name">绘镜</span>
+              <span class="brand-subname">MIRROR STUDIO</span>
+            </span>
+          </a>
+          <nav class="flex items-center gap-2 text-sm">
+          
+            <a class="nav-link" href="/workspace">创作台</a>
+            <a class="nav-link" href="/account">账户</a>
+            <form method="post" action="/api/auth/logout" class="inline">
+              <input type="hidden" name="csrfmiddlewaretoken" value="9lQYJcLS8s2LFT8QjQXBh5gp6u9RqBfb3QDd60wdrUpkoHK8fIXkbuckA1JBqiwi">
+              <button class="btn-secondary" type="submit">退出</button>
+            </form>
+          
+        </nav>
+      </div>
+      </div>
+    </header>
+    <main class="pb-16">
+<section class="site-shell py-10">
+  <div class="mx-auto max-w-xl panel p-8">
+    <h1 class="text-2xl font-semibold text-slate-950">安全设置</h1>
+    <p class="mt-2 text-slate-600">如需修改密码，可直接调用重置接口。</p>
+    <form class="mt-6 space-y-4" hx-post="/api/auth/reset-password" hx-target="#security-result" hx-swap="innerHTML">
+      <input type="hidden" name="csrfmiddlewaretoken" value="9lQYJcLS8s2LFT8QjQXBh5gp6u9RqBfb3QDd60wdrUpkoHK8fIXkbuckA1JBqiwi">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">账号</label>
+        <input class="w-full rounded-xl border border-slate-200 px-3 py-2" name="username" value="admin" readonly>
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">邮箱</label>
+        <input class="w-full rounded-xl border border-slate-200 px-3 py-2" name="email" value="admin@example.com">
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">新密码</label>
+        <input class="w-full rounded-xl border border-slate-200 px-3 py-2" name="new_password" type="password">
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">确认新密码</label>
+        <input class="w-full rounded-xl border border-slate-200 px-3 py-2" name="confirm_password" type="password">
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">验证码</label>
+        <div class="mb-2 flex items-center gap-3" data-captcha-block>
+  <div class="relative flex-1 overflow-hidden rounded-2xl border border-slate-200/80 bg-[linear-gradient(135deg,#f8fbff_0%,#eef4ff_100%)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(191,219,254,0.45),transparent_42%),radial-gradient(circle_at_bottom_right,rgba(196,181,253,0.18),transparent_38%)]"></div>
+    <img
+      src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjgiIGhlaWdodD0iNTYiIHZpZXdCb3g9IjAgMCAxNjggNTYiIHJvbGU9ImltZyIgYXJpYS1sYWJlbD0i6aqM6K+B56CBIj4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iY2FwdGNoYS1iZyIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNmOGZiZmYiIC8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI2VlZjRmZiIgLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8ZmlsdGVyIGlkPSJzb2Z0LW5vaXNlIj4KICAgICAgPGZlVHVyYnVsZW5jZSB0eXBlPSJmcmFjdGFsTm9pc2UiIGJhc2VGcmVxdWVuY3k9IjAuOSIgbnVtT2N0YXZlcz0iMSIgc2VlZD0iNjkyIiAvPgogICAgICA8ZmVDb2xvck1hdHJpeCB0eXBlPSJzYXR1cmF0ZSIgdmFsdWVzPSIwIiAvPgogICAgICA8ZmVDb21wb25lbnRUcmFuc2Zlcj4KICAgICAgICA8ZmVGdW5jQSB0eXBlPSJ0YWJsZSIgdGFibGVWYWx1ZXM9IjAgMCAwLjA4IDAiIC8+CiAgICAgIDwvZmVDb21wb25lbnRUcmFuc2Zlcj4KICAgIDwvZmlsdGVyPgogIDwvZGVmcz4KICA8cmVjdCB4PSIwLjc1IiB5PSIwLjc1IiB3aWR0aD0iMTY2LjUiIGhlaWdodD0iNTQuNSIgcng9IjE2IiBmaWxsPSJ1cmwoI2NhcHRjaGEtYmcpIiBzdHJva2U9InJnYmEoMTQ4LDE2MywxODQsMC4yOCkiIC8+CiAgPHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjE2OCIgaGVpZ2h0PSI1NiIgcng9IjE2IiBmaWxsPSJ3aGl0ZSIgZmlsdGVyPSJ1cmwoI3NvZnQtbm9pc2UpIiBvcGFjaXR5PSIwLjQ1IiAvPgogIDxjaXJjbGUgY3g9IjE0IiBjeT0iMTYiIHI9IjQiIGZpbGw9InJnYmEoMjA5LCAyMjIsIDI1NSwgMC4zMikiIC8+PGNpcmNsZSBjeD0iNTUiIGN5PSIzNiIgcj0iMiIgZmlsbD0icmdiYSgxODEsIDE5MSwgMjU1LCAwLjMyKSIgLz48Y2lyY2xlIGN4PSIxNjAiIGN5PSIyMiIgcj0iMiIgZmlsbD0icmdiYSgxOTQsIDIyNSwgMjU1LCAwLjMyKSIgLz48Y2lyY2xlIGN4PSI3NyIgY3k9IjQ3IiByPSIzIiBmaWxsPSJyZ2JhKDIwOCwgMjIwLCAyNTUsIDAuMzIpIiAvPjxjaXJjbGUgY3g9IjE1MSIgY3k9IjMzIiByPSIzIiBmaWxsPSJyZ2JhKDIyNywgMTk2LCAyNTUsIDAuMzIpIiAvPjxjaXJjbGUgY3g9Ijk1IiBjeT0iMTgiIHI9IjQiIGZpbGw9InJnYmEoMTk2LCAyMzEsIDI1NSwgMC4zMikiIC8+PGNpcmNsZSBjeD0iMTE1IiBjeT0iMjUiIHI9IjIiIGZpbGw9InJnYmEoMjIyLCAyMzEsIDI1NSwgMC4zMikiIC8+CiAgPHBhdGggZD0iTSAtOCAzNCBRIDg0LjAgMTggMTc2IDQ1IiBzdHJva2U9InJnYmEoMTIwLCAyMDMsIDIyNSwgMC40MikiIHN0cm9rZS13aWR0aD0iMi4wNiIgZmlsbD0ibm9uZSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPjxwYXRoIGQ9Ik0gLTggMzkgUSA4NC4wIDUwIDE3NiAzOCIgc3Ryb2tlPSJyZ2JhKDE4MSwgMTcwLCAyMDMsIDAuNDIpIiBzdHJva2Utd2lkdGg9IjEuNDciIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz48cGF0aCBkPSJNIC04IDM3IFEgODQuMCAyNCAxNzYgMjciIHN0cm9rZT0icmdiYSgxNzQsIDE4NSwgMjMzLCAwLjQyKSIgc3Ryb2tlLXdpZHRoPSIxLjU2IiBmaWxsPSJub25lIiBzdHJva2UtbGluZWNhcD0icm91bmQiIC8+PHBhdGggZD0iTSAtOCA0MiBRIDg0LjAgMjAgMTc2IDExIiBzdHJva2U9InJnYmEoMTgwLCAxOTEsIDIzNywgMC40MikiIHN0cm9rZS13aWR0aD0iMS40MSIgZmlsbD0ibm9uZSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDx0ZXh0IHg9IjI2IiB5PSI0MCIgdHJhbnNmb3JtPSJyb3RhdGUoLTEyIDI2IDQwKSIgZmlsbD0iIzBmMTcyYSIgZmlsbC1vcGFjaXR5PSIwLjk3IiBmb250LWZhbWlseT0idWktbW9ub3NwYWNlLCBTRk1vbm8tUmVndWxhciwgTWVubG8sIE1vbmFjbywgQ29uc29sYXMsIG1vbm9zcGFjZSIgZm9udC1zaXplPSIyNiIgZm9udC13ZWlnaHQ9IjcwMCIgbGV0dGVyLXNwYWNpbmc9IjEuNSI+RDwvdGV4dD48dGV4dCB4PSI1OSIgeT0iMzgiIHRyYW5zZm9ybT0icm90YXRlKDMgNTkgMzgpIiBmaWxsPSIjMGYxNzJhIiBmaWxsLW9wYWNpdHk9IjAuODQiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsIFNGTW9uby1SZWd1bGFyLCBNZW5sbywgTW9uYWNvLCBDb25zb2xhcywgbW9ub3NwYWNlIiBmb250LXNpemU9IjI3IiBmb250LXdlaWdodD0iNzAwIiBsZXR0ZXItc3BhY2luZz0iMS41Ij5NPC90ZXh0Pjx0ZXh0IHg9IjkyIiB5PSIzNyIgdHJhbnNmb3JtPSJyb3RhdGUoNSA5MiAzNykiIGZpbGw9IiMwZjE3MmEiIGZpbGwtb3BhY2l0eT0iMC44NCIgZm9udC1mYW1pbHk9InVpLW1vbm9zcGFjZSwgU0ZNb25vLVJlZ3VsYXIsIE1lbmxvLCBNb25hY28sIENvbnNvbGFzLCBtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMzEiIGZvbnQtd2VpZ2h0PSI3MDAiIGxldHRlci1zcGFjaW5nPSIxLjUiPkY8L3RleHQ+PHRleHQgeD0iMTI0IiB5PSIzNyIgdHJhbnNmb3JtPSJyb3RhdGUoNSAxMjQgMzcpIiBmaWxsPSIjMGYxNzJhIiBmaWxsLW9wYWNpdHk9IjAuOTYiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsIFNGTW9uby1SZWd1bGFyLCBNZW5sbywgTW9uYWNvLCBDb25zb2xhcywgbW9ub3NwYWNlIiBmb250LXNpemU9IjMxIiBmb250LXdlaWdodD0iNzAwIiBsZXR0ZXItc3BhY2luZz0iMS41Ij5BPC90ZXh0Pgo8L3N2Zz4="
+      alt="验证码图片"
+      class="relative block h-14 w-full rounded-[0.95rem] object-cover"
+      data-captcha-image
+    >
+  </div>
+  <button
+    type="button"
+    class="h-14 shrink-0 rounded-2xl border border-slate-200/80 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
+    data-captcha-refresh
+  >
+    换一张
+  </button>
+</div>
+<p class="mb-2 pl-1 text-xs text-slate-400">点击右侧刷新，不区分大小写。</p>
+<script>
+  (function () {
+    if (window.__mirrorCaptchaBindingReady) return;
+    window.__mirrorCaptchaBindingReady = true;
+    document.addEventListener("click", async function (event) {
+      var refreshButton = event.target.closest("[data-captcha-refresh]");
+      if (!refreshButton) return;
+      var container = refreshButton.closest("[data-captcha-block]");
+      if (!container) return;
+      var image = container.querySelector("[data-captcha-image]");
+      if (!image) return;
+      refreshButton.disabled = true;
+      try {
+        var response = await fetch("/api/auth/captcha", { credentials: "same-origin" });
+        var payload = await response.json();
+        var src = payload && payload.data ? payload.data.captcha_svg : "";
+        if (src) image.src = src;
+      } catch (error) {
+        console.warn("captcha refresh failed", error);
+      } finally {
+        refreshButton.disabled = false;
+      }
+    });
+  })();
+</script>
+
+        <input class="w-full rounded-xl border border-slate-200 px-3 py-2" name="captcha_code">
+      </div>
+      <button class="btn-primary" type="submit">提交修改</button>
+    </form>
+    <div id="security-result" class="mt-4 text-sm text-slate-500"></div>
+  </div>
+</section>
+</main>
+    <footer class="site-shell pb-8 pt-6">
+      <div class="flex flex-col gap-4 rounded-[28px] border border-white/70 bg-white/70 px-6 py-5 backdrop-blur md:flex-row md:items-center md:justify-between">
+        <div>
+          <p class="font-display text-lg font-semibold text-slate-950">绘镜</p>
+          <p class="mt-1 text-sm text-slate-500">把灵感写成图像，把作品留在自己的空间里</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <a class="footer-link" href="/workspace">创作台</a>
+          
+          <a class="footer-link" href="/account/history">历史图片</a>
+          
+        </div>
+      </div>
+    </footer>
+    
+  </body>
+</html>
+

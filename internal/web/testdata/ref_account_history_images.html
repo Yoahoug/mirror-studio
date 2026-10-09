@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>历史图片 - 绘镜 Studio</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+      /* ── ArtMirror Design Language Override ── */
+      :root {
+        --am-bg: #f9fafb;
+        --am-surface: rgba(255,255,255,0.85);
+        --am-border: #e5e7eb;
+        --am-primary: #1a1a1a;
+        --am-muted: #6b7280;
+        --am-radius: 1.5rem;
+        --am-radius-sm: 1rem;
+      }
+
+      body {
+        font-family: "Inter", "Nunito Sans", "Noto Sans SC", sans-serif !important;
+        background: var(--am-bg) !important;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      h1, h2, h3, h4, .font-display {
+        font-family: "Inter", "Rubik", "Noto Sans SC", sans-serif !important;
+        letter-spacing: -0.025em;
+      }
+
+      /* Nav overrides */
+      .nav-card {
+        border-radius: 2rem !important;
+        border: 1px solid rgba(255,255,255,0.6) !important;
+        background: var(--am-surface) !important;
+        backdrop-filter: blur(24px) !important;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.06) !important;
+      }
+
+      .brand-mark {
+        background: var(--am-primary) !important;
+        border-radius: var(--am-radius-sm) !important;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.12) !important;
+      }
+
+      .nav-link {
+        font-weight: 600;
+        border-radius: 9999px;
+        transition: all 0.2s;
+      }
+
+      .nav-link:hover {
+        background: rgba(0,0,0,0.04) !important;
+        color: var(--am-primary) !important;
+      }
+
+      /* Panel / Card overrides */
+      .panel {
+        border-radius: var(--am-radius) !important;
+        border: 1px solid var(--am-border) !important;
+        background: var(--am-surface) !important;
+        backdrop-filter: blur(12px) !important;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.04) !important;
+        transition: box-shadow 0.2s, transform 0.2s;
+      }
+
+      .panel:hover {
+        box-shadow: 0 8px 32px rgba(0,0,0,0.08) !important;
+      }
+
+      /* Button overrides */
+      .btn-primary {
+        background: var(--am-primary) !important;
+        border-radius: var(--am-radius-sm) !important;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.12) !important;
+        font-weight: 700;
+        transition: all 0.2s;
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(0,0,0,0.16) !important;
+      }
+
+      .btn-secondary {
+        border-radius: var(--am-radius-sm) !important;
+        border: 1px solid var(--am-border) !important;
+        background: white !important;
+        font-weight: 600;
+        transition: all 0.2s;
+      }
+
+      .btn-secondary:hover {
+        border-color: var(--am-primary) !important;
+        color: var(--am-primary) !important;
+        transform: translateY(-2px);
+      }
+
+      /* Table overrides */
+      table thead {
+        background: var(--am-bg) !important;
+      }
+
+      table th {
+        font-size: 0.7rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--am-muted);
+      }
+
+      table td {
+        font-size: 0.875rem;
+      }
+
+      table tbody tr {
+        transition: background 0.15s;
+      }
+
+      table tbody tr:hover {
+        background: rgba(0,0,0,0.02);
+      }
+
+      /* Footer overrides */
+      footer .flex {
+        border-radius: var(--am-radius) !important;
+      }
+
+      /* Price card overrides */
+      .price-card {
+        border-radius: var(--am-radius) !important;
+        border: 1px solid var(--am-border) !important;
+      }
+
+      .price-card:hover {
+        border-color: var(--am-primary) !important;
+      }
+
+      .price-card--featured {
+        background: var(--am-primary) !important;
+        border-color: transparent !important;
+      }
+
+      /* Scrollbar – match ArtMirror */
+      ::-webkit-scrollbar { width: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
+
+      /* Background orbs – softer for ArtMirror style */
+      .page-orb { opacity: 0.4; }
+
+      .page-frame {
+        background: var(--am-bg) !important;
+      }
+    </style>
+    
+  </head>
+  <body class="page-frame">
+    <div class="page-orb left-[-8rem] top-16 h-64 w-64 bg-brand-100/90"></div>
+    <div class="page-orb right-[-7rem] top-40 h-72 w-72 bg-cyan-200/70"></div>
+    <div class="page-orb bottom-[-8rem] left-[26%] h-72 w-72 bg-orange-100/80"></div>
+    <header class="nav-shell">
+      <div class="nav-card">
+        <div class="site-shell flex min-h-[78px] items-center justify-between gap-6">
+          <a class="brand-lockup" href="/">
+            <span class="brand-mark">HJ</span>
+            <span class="brand-copy">
+              <span class="brand-name">绘镜</span>
+              <span class="brand-subname">MIRROR STUDIO</span>
+            </span>
+          </a>
+          <nav class="flex items-center gap-2 text-sm">
+          
+            <a class="nav-link" href="/workspace">创作台</a>
+            <a class="nav-link" href="/account">账户</a>
+            <form method="post" action="/api/auth/logout" class="inline">
+              <input type="hidden" name="csrfmiddlewaretoken" value="P0JSd3wiV8wYiLVcxpxtZBLxxbdlOuQAWRivZoVFiZG99DPs0zKXkGw2B5n1DKSu">
+              <button class="btn-secondary" type="submit">退出</button>
+            </form>
+          
+        </nav>
+      </div>
+      </div>
+    </header>
+    <main class="pb-16">
+<section class="site-shell py-10">
+  <div class="mb-6 flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-semibold text-slate-950">历史图片</h1>
+      <p class="mt-2 text-slate-600">这里只显示你的图片，下载链接也会再次校验归属。</p>
+    </div>
+    <a class="btn-primary" href="/workspace">继续创作</a>
+  </div>
+  <div class="grid gap-4 md:grid-cols-3">
+    
+    <a class="panel block overflow-hidden" href="/account/history/G202610091254531BC7EAD2">
+      <div class="p-5">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-sm font-medium text-slate-900">G202610091254531BC7EAD2</span>
+          <span class="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">可用</span>
+        </div>
+        <p class="line-clamp-3 text-sm text-slate-600">频率限制探测</p>
+        <p class="mt-3 text-xs text-slate-500">过期时间：2026-11-08 20:54</p>
+      </div>
+    </a>
+    
+    <a class="panel block overflow-hidden" href="/account/history/G2026100912545369F60400">
+      <div class="p-5">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-sm font-medium text-slate-900">G2026100912545369F60400</span>
+          <span class="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">可用</span>
+        </div>
+        <p class="line-clamp-3 text-sm text-slate-600">使用上传凭证重绘</p>
+        <p class="mt-3 text-xs text-slate-500">过期时间：2026-11-08 20:54</p>
+      </div>
+    </a>
+    
+    <a class="panel block overflow-hidden" href="/account/history/G202610091254538EAE36ED">
+      <div class="p-5">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-sm font-medium text-slate-900">G202610091254538EAE36ED</span>
+          <span class="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">可用</span>
+        </div>
+        <p class="line-clamp-3 text-sm text-slate-600">参考原图重绘成电商海报</p>
+        <p class="mt-3 text-xs text-slate-500">过期时间：2026-11-08 20:54</p>
+      </div>
+    </a>
+    
+    <a class="panel block overflow-hidden" href="/account/history/G20261009125453DB8B50F5">
+      <div class="p-5">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-sm font-medium text-slate-900">G20261009125453DB8B50F5</span>
+          <span class="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">可用</span>
+        </div>
+        <p class="line-clamp-3 text-sm text-slate-600">最小尺寸与低质量</p>
+        <p class="mt-3 text-xs text-slate-500">过期时间：2026-11-08 20:54</p>
+      </div>
+    </a>
+    
+    <a class="panel block overflow-hidden" href="/account/history/G2026100912545376390976">
+      <div class="p-5">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-sm font-medium text-slate-900">G2026100912545376390976</span>
+          <span class="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">可用</span>
+        </div>
+        <p class="line-clamp-3 text-sm text-slate-600">2K 自定义比例海报</p>
+        <p class="mt-3 text-xs text-slate-500">过期时间：2026-11-08 20:54</p>
+      </div>
+    </a>
+    
+    <a class="panel block overflow-hidden" href="/account/history/G2026100912545308CD8404">
+      <div class="p-5">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-sm font-medium text-slate-900">G2026100912545308CD8404</span>
+          <span class="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">可用</span>
+        </div>
+        <p class="line-clamp-3 text-sm text-slate-600">一只橘猫在咖啡馆看报纸</p>
+        <p class="mt-3 text-xs text-slate-500">过期时间：2026-11-08 20:54</p>
+      </div>
+    </a>
+    
+  </div>
+</section>
+</main>
+    <footer class="site-shell pb-8 pt-6">
+      <div class="flex flex-col gap-4 rounded-[28px] border border-white/70 bg-white/70 px-6 py-5 backdrop-blur md:flex-row md:items-center md:justify-between">
+        <div>
+          <p class="font-display text-lg font-semibold text-slate-950">绘镜</p>
+          <p class="mt-1 text-sm text-slate-500">把灵感写成图像，把作品留在自己的空间里</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <a class="footer-link" href="/workspace">创作台</a>
+          
+          <a class="footer-link" href="/account/history">历史图片</a>
+          
+        </div>
+      </div>
+    </footer>
+    
+  </body>
+</html>
+
