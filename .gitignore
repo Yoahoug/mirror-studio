@@ -16,8 +16,8 @@ frontend/console/tsconfig.tsbuildinfo
 static/workspace/
 static/console/
 static/css/main.css
-novel/*.epub
-media/
+/novel/*.epub
+/media/
 .env
 .DS_Store
 .playwright-cli/
@@ -31,3 +31,4 @@ static/images/workspace-poster.png
 部署/*.zip
 .venv-ref/
 .reftmp/
+bin/
