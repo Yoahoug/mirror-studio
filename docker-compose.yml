@@ -1,94 +1,33 @@
 name: mirror-studio
 
+# 0.0.1 是单二进制 + SQLite：一个进程内嵌迁移、幂等种子与后台 worker，
+# 因此只有一个服务、一个卷。启动失败会打印原因并退出（docker compose logs app）。
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  web:
-    build: .
+  app:
+    build:
+      context: .
+      # 构建段要拉 npm 依赖与 Go 模块。默认 buildkit 桥接网络在受限环境下
+      # 没有外网路由，host 网络最稳；如你的环境桥接可直连，删掉这行即可。
+      network: host
     image: mirror-studio-app
     restart: unless-stopped
-    command: sh /app/docker/start-web.sh
     env_file:
       - ${APP_ENV_FILE:-.env}
     environment:
-      DJANGO_SETTINGS_MODULE: config.settings.prod
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      CACHE_BACKEND: django.core.cache.backends.locmem.LocMemCache
-      USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-1}
+      # DATABASE_URL 由镜像内置为 sqlite:////app/data/db.sqlite3，
+      # 如需换路径在这里覆盖（0.0.1 只接受 sqlite，见 internal/config/config.go）。
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:8000}
+      USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-0}
       TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR:-0}
-      MOCK_PROVIDER_ENABLED: ${MOCK_PROVIDER_ENABLED:-0}
-      MINIO_USE_LOCAL_FS: ${MINIO_USE_LOCAL_FS:-1}
-      MINIO_LOCAL_ROOT: /app/media/minio
-      AUTO_APPLY_MIGRATIONS: ${AUTO_APPLY_MIGRATIONS:-1}
-      AUTO_SEED_SITECONFIG: ${AUTO_SEED_SITECONFIG:-1}
-      AUTO_INIT_APP_DATA: ${AUTO_INIT_APP_DATA:-0}
-      AUTO_COLLECTSTATIC: ${AUTO_COLLECTSTATIC:-1}
-      ALLOW_INSECURE_PROD: ${ALLOW_INSECURE_PROD:-0}
-      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-1}
-      CSRF_COOKIE_SECURE: ${CSRF_COOKIE_SECURE:-1}
-      SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-1}
-      SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-31536000}
-      WORKSPACE_VITE_DEV_URL: ""
-      CONSOLE_VITE_DEV_URL: ""
-      GUNICORN_WORKER_CLASS: ${GUNICORN_WORKER_CLASS:-gthread}
-      GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
-      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-180}
-      GUNICORN_GRACEFUL_TIMEOUT: ${GUNICORN_GRACEFUL_TIMEOUT:-30}
-      GUNICORN_KEEPALIVE: ${GUNICORN_KEEPALIVE:-10}
-      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-800}
-      GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:-80}
-      RESUMABLE_UPLOAD_CHUNK_SIZE: ${RESUMABLE_UPLOAD_CHUNK_SIZE:-8388608}
-      HTTP_PROXY: ${EXTERNAL_HTTP_PROXY:-}
-      HTTPS_PROXY: ${EXTERNAL_HTTP_PROXY:-}
-      NO_PROXY: ${EXTERNAL_NO_PROXY:-localhost,127.0.0.1,postgres,172.0.0.1,host.docker.internal}
-    depends_on:
-      - postgres
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - media_data:/app/media
-      - static_volume:/app/staticfiles
-    ports:
-      - "${HTTP_PORT:-8000}:8000"
-
-  worker:
-    image: mirror-studio-app
-    restart: unless-stopped
-    command: sh /app/docker/start-worker.sh
-    env_file:
-      - ${APP_ENV_FILE:-.env}
-    environment:
-      DJANGO_SETTINGS_MODULE: config.settings.prod
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      CACHE_BACKEND: django.core.cache.backends.locmem.LocMemCache
-      TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR:-0}
-      MOCK_PROVIDER_ENABLED: ${MOCK_PROVIDER_ENABLED:-0}
-      MINIO_USE_LOCAL_FS: ${MINIO_USE_LOCAL_FS:-1}
-      MINIO_LOCAL_ROOT: /app/media/minio
-      ALLOW_INSECURE_PROD: ${ALLOW_INSECURE_PROD:-0}
-      GENERATION_TASKS_RUN_INLINE: ${GENERATION_TASKS_RUN_INLINE:-0}
-      GENERATION_WORKER_POLL_SECONDS: ${GENERATION_WORKER_POLL_SECONDS:-2}
+      SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-0}
       GENERATION_WORKER_CONCURRENCY: ${GENERATION_WORKER_CONCURRENCY:-4}
       HTTP_PROXY: ${EXTERNAL_HTTP_PROXY:-}
       HTTPS_PROXY: ${EXTERNAL_HTTP_PROXY:-}
-      NO_PROXY: ${EXTERNAL_NO_PROXY:-localhost,127.0.0.1,postgres,172.0.0.1,host.docker.internal}
-    depends_on:
-      - postgres
-      - web
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      NO_PROXY: ${EXTERNAL_NO_PROXY:-localhost,127.0.0.1}
     volumes:
-      - media_data:/app/media
+      - app_data:/app/data
+    ports:
+      - "${HTTP_PORT:-8000}:8000"
 
 volumes:
-  postgres_data:
-  media_data:
-  static_volume:
+  app_data:

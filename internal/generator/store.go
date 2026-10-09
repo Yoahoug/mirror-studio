@@ -369,10 +369,6 @@ func (s *Service) taskByClientRequestID(ctx context.Context, userID int64, clien
 		userID, clientRequestID)
 }
 
-func (s *Service) topicRef(ctx context.Context, topicID int64) (*Topic, error) {
-	return s.topicByID(ctx, 0, topicID)
-}
-
 // ── image loading ──
 
 // imagesByTaskID reads mediahub_generatedimage for the given tasks. internal/media
