@@ -2,7 +2,7 @@
 
 绘镜 Mirror Studio 是一个面向朋友小圈子和自托管场景的 AI 生图工作台。你可以接入自己的图片模型和 LLM 渠道，开放给朋友注册使用，支持参考图上传、文生图、图生图，以及上传 EPUB 小说后自动分析剧情并生成场景图。
 
-项目默认采用 Django 单体后端承载两个 React 工作台，配合 PostgreSQL、后台 worker 和本地文件存储即可运行。代码结构适合公开仓库初始化、私有部署和二次修改。
+0.0.1 是一次整体重写：后端为**单个 Go 二进制**（内嵌 SQLite 迁移、幂等种子、SSR 模板、SPA 静态资源与进程内后台 worker），前端为**一个 npm 包**内的两个 React 工作台，部署为**单容器 + 单卷 + SQLite**。不兼容 1.x 的 Django/Postgres 数据结构，属于全新基线。
 
 ## 能做什么
 
@@ -15,10 +15,10 @@
 
 ## 技术栈
 
-- 后端：Django + Gunicorn + PostgreSQL。
-- 前端：React + Vite + TypeScript。
-- 存储：默认本地文件目录；保留 MinIO 兼容能力。
-- 部署：Docker Compose，包含 `postgres`、`web`、`worker` 三个服务。
+- 后端：Go 1.26 单二进制，SQLite（纯 Go 驱动，无 CGO），进程内 worker。
+- 前端：React + Vite + TypeScript，构建产物内嵌进二进制。
+- 存储：本地文件目录（`/app/data` 一个卷）。
+- 部署：Docker Compose，单个 `app` 服务。
 
 ## 快速部署
 
@@ -30,10 +30,9 @@ cp .env.example .env
 
 编辑 `.env`，最少需要改这些：
 
-- `SECRET_KEY`
+- `SECRET_KEY`（≥32 字符）
+- `FIELD_CRYPT_KEY`（渠道 API Key 的字段加密密钥，缺失拒绝启动）
 - `PUBLIC_ORIGIN`
-- `POSTGRES_PASSWORD`
-- `DATABASE_URL` 中的数据库密码
 - `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_EMAIL`
 - `PROVIDER_BASE_URL` / `PROVIDER_MODEL_NAME` / `PROVIDER_API_KEY`
 - `LLM_BASE_URL` / `LLM_MODEL_NAME` / `LLM_API_KEY`
@@ -45,15 +44,31 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+启动过程固定为：建库迁移 → 幂等种子（站点配置、管理员、默认渠道）→ 监听；失败会打印原因并退出，用 `docker compose logs app` 查看。
+
 默认访问：
 
 - 工作台：`http://服务器IP:8000/workspace`
 - 管理台：`http://服务器IP:8000/console`
-- 兼容入口：`http://服务器IP:8000/admin`
 
 如果你把 `HTTP_PORT` 改成其他值，按实际端口访问。
 
+## 数据与备份
+
+所有可变数据在容器内的 `/app/data` 一个卷里：
+
+```text
+/app/data/db.sqlite3          SQLite 主库（含 -wal/-shm 伴生文件）
+/app/data/media/              生成图与参考图
+/app/data/novel/              小说可视化产物
+/app/data/novelviz/uploads/   EPUB 分片上传暂存
+```
+
+备份 = 备份这个卷；升级 = 换镜像重新 `up -d`，迁移在启动时自动应用。
+
 ## 最小环境变量说明
+
+完整清单见 `.env.example`；变量语义是差分冻结契约的一部分（`docs/api-contract-0.0.1.md` §11）。
 
 ### 站点
 
@@ -63,11 +78,10 @@ docker compose up -d --build
 PUBLIC_ORIGIN=https://image.example.com
 ```
 
-程序会用它自动推导默认的 `ALLOWED_HOSTS` 和 `CSRF_TRUSTED_ORIGINS`。只有多域名部署时才需要手动补充：
+多域名部署时补充：
 
 ```bash
-ALLOWED_HOSTS=image.example.com,www.image.example.com
-CSRF_TRUSTED_ORIGINS=https://image.example.com,https://www.image.example.com
+CSRF_TRUSTED_ORIGINS=https://www.image.example.com
 ```
 
 ### 生图渠道
@@ -118,15 +132,11 @@ DEFAULT_FROM_EMAIL=绘镜 Studio <your_qq@qq.com>
 
 ## Cloudflare Tunnel / 反向代理部署
 
-如果通过 Cloudflare Tunnel、Nginx、宝塔反代或其他 HTTPS 入口访问，必须保证外部域名和协议能传到 Django。
-
-`.env` 建议：
+如果通过 Cloudflare Tunnel、Nginx、宝塔反代或其他 HTTPS 入口访问，`.env` 建议：
 
 ```bash
 PUBLIC_ORIGIN=https://image.example.com
 USE_X_FORWARDED_HOST=1
-SESSION_COOKIE_SECURE=1
-CSRF_COOKIE_SECURE=1
 SECURE_SSL_REDIRECT=1
 ```
 
@@ -139,7 +149,9 @@ proxy_set_header X-Forwarded-Proto $scheme;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 ```
 
-项目里的 `docker/nginx/default.conf` 已经对 `/api/uploads/` 关闭请求缓冲，并保留 `X-Forwarded-Host` / `X-Forwarded-Proto`。如果你的 Cloudflare Tunnel 直接打到 `web:8000`，请在 tunnel 或上游代理中传递同等头部。
+经 Cloudflare Tunnel 直达容器时，请在 tunnel 或上游代理中传递同等头部。`TRUST_X_FORWARDED_FOR=0`（默认）时应用取 TCP 对端地址做风控计数；仅当反代会覆盖 `X-Forwarded-For` 时才置 1，否则客户端可伪造来源 IP。
+
+上传大文件（EPUB）时确认代理的请求体限制大于 `NOVELVIZ_MAX_EPUB_UPLOAD_BYTES`，并对上传接口关闭请求缓冲。
 
 ## 大文件上传
 
@@ -151,96 +163,62 @@ RESUMABLE_UPLOAD_SESSION_TTL_SECONDS=86400
 NOVELVIZ_MAX_EPUB_UPLOAD_BYTES=83886080
 ```
 
-如果前面还有 Nginx 或其他代理，请确认请求体限制大于 `NOVELVIZ_MAX_EPUB_UPLOAD_BYTES`。项目自带 Nginx 示例为：
-
-```nginx
-client_max_body_size 96m;
-proxy_request_buffering off;
-```
-
 ## 本地开发
 
-macOS / Linux：
+macOS / Linux（需要 Go ≥ 1.26 与 Node ≥ 20）：
 
 ```bash
-.venv/bin/python --version 2>/dev/null || python3 -m venv .venv
-source .venv/bin/activate
-.venv/bin/pip install -r requirements/dev.txt
 npm install
-npm install --prefix frontend/workspace
-npm install --prefix frontend/console
-cp .env.example .env
-.venv/bin/python manage.py migrate
-.venv/bin/python scripts/seed_siteconfig.py
-.venv/bin/python scripts/seed_demo_data.py
-.venv/bin/python manage.py runserver
+npm run build            # 前端产物写入 static/，由 go:embed 打包
+DEBUG=1 SECRET_KEY=dev-secret-key-0123456789abcdef \
+FIELD_CRYPT_KEY=dev-field-crypt-key \
+go run .
 ```
 
-前端开发服务：
+前端开发服务（DEBUG=1 时页面指向 Vite 开发服务器）：
 
 ```bash
+npm run dev:workspace    # http://127.0.0.1:3000
+npm run dev:console      # http://127.0.0.1:3001
 npm run watch:css
-npm run dev --prefix frontend/workspace
-npm run dev --prefix frontend/console
 ```
 
-Windows PowerShell 可参考 `scripts/start-local.ps1` 等脚本。
-
-## 构建前端静态资源
+测试与类型检查：
 
 ```bash
-npm run build:css
-npm run build --prefix frontend/workspace
-npm run build --prefix frontend/console
-.venv/bin/python manage.py collectstatic --noinput
+go test ./...
+npm run lint
 ```
 
-## 初始化数据
-
-容器启动时由这些变量控制：
-
-```bash
-AUTO_APPLY_MIGRATIONS=1
-AUTO_SEED_SITECONFIG=1
-AUTO_INIT_APP_DATA=1
-AUTO_COLLECTSTATIC=1
-```
-
-其中 `AUTO_INIT_APP_DATA=1` 会创建或更新管理员账号，并根据 `PROVIDER_*` / `LLM_*` 初始化默认模型渠道。
+详见 `docs/DEVELOPMENT.md`（本地开发）、`docs/FRONTEND.md`（前端结构与构建）、`docs/RELEASING.md`（版本与发布）。
 
 ## 常用命令
 
 ```bash
-# 启动
- docker compose up -d --build
+# 启动 / 重建
+docker compose up -d --build
 
 # 查看日志
- docker compose logs -f web
- docker compose logs -f worker
+docker compose logs -f app
 
-# 进入 Django shell
- docker compose exec web python manage.py shell
-
-# 重新初始化站点配置
- docker compose exec web python scripts/seed_siteconfig.py
-
-# 重新初始化管理员和默认渠道
- docker compose exec web python scripts/seed_demo_data.py
+# 版本发布（VERSION 只能由它修改）
+python3 scripts/release.py 0.0.2 --dry-run
+python3 scripts/release.py 0.0.2
 ```
 
 ## 目录结构
 
 ```text
-apps/                 Django 应用
-config/               Django 配置、URL、ASGI/WSGI
-frontend/workspace/   用户工作台 React 应用
-frontend/console/     管理台 React 应用
-requirements/         Python 依赖
-scripts/              初始化与辅助脚本
-static_src/           Tailwind 源样式
-static/               构建后静态入口资源
-templates/            Django 模板
-docker/               容器启动脚本和 Nginx 示例
+main.go                单二进制入口（内嵌 static/、迁移、tzdata）
+internal/              Go 后端全部包（auth/web/generator/media/novel/console/...）
+frontend/workspace/    用户工作台 React 应用
+frontend/console/      管理台 React 应用
+frontend/shared/       两应用共用的 Vite 配置
+static_src/            SSR 页面 Tailwind 源样式
+static/                构建产物（go:embed 打包，不提交）
+scripts/release.py     发布脚本（VERSION 的唯一写入者）
+tools/diff/            差分验证工具（开发资产）
+docs/                  契约、审查、验证与开发文档
 ```
 
 ## 友情链接
