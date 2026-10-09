@@ -284,15 +284,12 @@ func (s *Service) runAttempt(ctx context.Context, task *Task, adapter providerAd
 	raw.set("_meta", meta)
 	providerResponse := encodeDjangoJSON(raw)
 
-	updated, settle, err := s.setTaskSucceeded(ctx, task.TaskNo, result.requestID, providerResponse)
+	updated, err := s.setTaskSucceeded(ctx, task.TaskNo, result.requestID, providerResponse)
 	if err != nil {
 		return err
 	}
-	if settle {
-		if err := s.quota.Consume(ctx, task.UserID, task.QuotaCost, task.TaskNo); err != nil {
-			s.log.Error("任务成功扣减次数失败", "task_no", task.TaskNo, "error", err)
-		}
-	}
+	// The frozen quota was consumed inside the same transaction that marked the
+	// task succeeded; nothing settles outside it anymore.
 	if updated != nil && updated.TopicID != nil && firstImageID != 0 {
 		if err := s.touchTopic(ctx, *updated.TopicID, &firstImageID); err != nil {
 			s.log.Warn("主题封面更新失败", "topic_id", *updated.TopicID, "error", err)

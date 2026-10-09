@@ -202,6 +202,22 @@ func envList(name string, def []string) []string {
 // Any error returned here must abort startup: the caller prints it and exits
 // non-zero rather than serving a partially configured service.
 func Load() (*Config, error) {
+	// Switches the rewrite deleted outright must fail loudly when a deployment
+	// still sets them: silently ignoring ALLOW_INSECURE_PROD would reopen the
+	// hole the guard exists for, and a stale CONSOLE_HMAC_ENABLED would look
+	// like it restored a control that no longer exists.
+	for _, name := range []string{
+		"ALLOW_INSECURE_PROD", "CONSOLE_HMAC_ENABLED",
+		"GENERATION_TASKS_RUN_INLINE", "NOVELVIZ_RUN_INLINE",
+	} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return nil, fmt.Errorf("%s was removed in 0.0.1 and must not be set; delete it from the environment", name)
+		}
+	}
+	if strings.TrimSpace(os.Getenv("MINIO_ENDPOINT")) != "" {
+		return nil, fmt.Errorf("MINIO_ENDPOINT was removed in 0.0.1: the storage backend is the local filesystem under MEDIA_ROOT")
+	}
+
 	cfg := &Config{}
 	var err error
 
@@ -355,8 +371,15 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.MockProviderEnabled, err = envBool("MOCK_PROVIDER_ENABLED", true); err != nil {
+	// The reference defaults the mock provider on in development and refuses to
+	// boot production with it enabled (prod.py). The rewrite keeps one default:
+	// off, so a deployment that forgets the variable serves real traffic, and
+	// the same production guard the reference enforces.
+	if cfg.MockProviderEnabled, err = envBool("MOCK_PROVIDER_ENABLED", false); err != nil {
 		return nil, err
+	}
+	if !cfg.Debug && cfg.MockProviderEnabled {
+		return nil, fmt.Errorf("MOCK_PROVIDER_ENABLED is enabled: the mock image provider must not serve production traffic")
 	}
 	if cfg.WorkerPollInterval, err = envSeconds("GENERATION_WORKER_POLL_SECONDS", 2); err != nil {
 		return nil, err

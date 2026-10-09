@@ -278,6 +278,14 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 			if lookupErr == nil && existing != nil {
 				return existing, nil
 			}
+		} else {
+			// The reference's submit runs inside one transaction, so any failure
+			// after the freeze rolls the freeze back with it; the release here is
+			// the rewrite's equivalent for the row insert that failed.
+			s.log.Error("任务写入失败，释放本次冻结", "task_no", taskNo, "error", err)
+			if releaseErr := s.quota.Release(ctx, in.UserID, 1, taskNo); releaseErr != nil {
+				s.log.Error("释放失败提交的冻结失败", "task_no", taskNo, "error", releaseErr)
+			}
 		}
 		return nil, err
 	}
@@ -583,38 +591,31 @@ func (s *Service) channelByIDTxIn(ctx context.Context, id int64) (*Channel, erro
 	return channel, nil
 }
 
-// Cancel cancels a queued or running task and releases its frozen quota.
+// Cancel cancels a queued or running task and releases its frozen quota. The
+// release happens inside cancelTask's transaction with the reference's
+// 用户取消任务 remark.
 func (s *Service) Cancel(ctx context.Context, userID int64, taskNo string) (*Task, error) {
-	task, settle, err := s.cancelTask(ctx, userID, taskNo)
+	task, err := s.cancelTask(ctx, userID, taskNo)
 	if err != nil {
 		return nil, err
 	}
 	if task == nil {
 		return nil, missingTask()
 	}
-	if settle {
-		if err := s.quota.Release(ctx, userID, task.QuotaCost, taskNo); err != nil {
-			s.log.Error("取消任务释放冻结失败", "task_no", taskNo, "error", err)
-		}
-	}
 	task.Images = nil
 	return task, nil
 }
 
 // DeleteHistory soft-deletes a task, cancels it when it has not finished and
-// marks its available images deleted.
+// marks its available images deleted. The release happens inside
+// deleteTaskHistory's transaction with the reference's 用户删除运行中任务 remark.
 func (s *Service) DeleteHistory(ctx context.Context, userID int64, taskNo string) error {
-	task, settle, err := s.deleteTaskHistory(ctx, userID, taskNo)
+	task, err := s.deleteTaskHistory(ctx, userID, taskNo)
 	if err != nil {
 		return err
 	}
 	if task == nil {
 		return missingTask()
-	}
-	if settle {
-		if err := s.quota.Release(ctx, userID, task.QuotaCost, taskNo); err != nil {
-			s.log.Error("删除运行中任务释放冻结失败", "task_no", taskNo, "error", err)
-		}
 	}
 	if task.ReferenceObjectKey != "" {
 		s.deleteStoredObject(ctx, task.ReferenceBucketName, task.ReferenceObjectKey)
@@ -713,19 +714,14 @@ func (s *Service) attachChannel(ctx context.Context, task *Task) error {
 }
 
 // failTask writes the terminal failure state and releases the frozen quota
-// exactly once.
+// exactly once, inside the same transaction (setTaskFailure).
 func (s *Service) failTask(ctx context.Context, task *Task, errorCode, errorMessage, providerRequestID string, rawResponse any) (*Task, error) {
-	updated, released, err := s.setTaskFailure(ctx, task.TaskNo, errorCode, errorMessage, providerRequestID, rawResponse)
+	updated, err := s.setTaskFailure(ctx, task.TaskNo, errorCode, errorMessage, providerRequestID, rawResponse)
 	if err != nil {
 		return nil, err
 	}
 	if updated == nil {
 		return task, nil
-	}
-	if released {
-		if err := s.quota.Release(ctx, updated.UserID, updated.QuotaCost, updated.TaskNo); err != nil {
-			s.log.Error("任务失败释放冻结失败", "task_no", updated.TaskNo, "error", err)
-		}
 	}
 	if s.audit != nil {
 		payload := map[string]any{

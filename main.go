@@ -133,6 +133,7 @@ func run() error {
 	webService := web.NewService(web.Deps{
 		DB: handle, Config: cfg, Site: site, Location: location, Cipher: cipher,
 		Auth:   webAuthAdapter{service: authService},
+		Risk:   riskService,
 		Quota:  quotaService,
 		Media:  mediaService,
 		Logger: logger,

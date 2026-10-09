@@ -15,6 +15,15 @@ import (
 	"mirror-studio/internal/siteconfig"
 )
 
+// RiskGateway is the slice of internal/risk the SSR login submit needs: the
+// same pre-check, failure recording and clearing the API login path runs. It is
+// declared here so web does not import risk.
+type RiskGateway interface {
+	EnsureLoginAllowed(ctx context.Context, username, ip string) error
+	RecordLoginFailure(ctx context.Context, username, ip string) int64
+	ClearLoginFailures(ctx context.Context, username, ip string)
+}
+
 // AuthService is the user domain as the server-rendered pages consume it.
 type AuthService interface {
 	ByID(ctx context.Context, id int64) (httpapi.Principal, error)
@@ -43,6 +52,7 @@ type Deps struct {
 	Location  *time.Location
 	Cipher    *crypt.FieldCipher
 	Auth      AuthService
+	Risk      RiskGateway
 	Quota     QuotaService
 	Media     MediaService
 	Generator interface{}
@@ -55,6 +65,7 @@ type Service struct {
 	site         *siteconfig.Service
 	location     *time.Location
 	auth         AuthService
+	risk         RiskGateway
 	quota        QuotaService
 	media        MediaService
 	logger       *slog.Logger
@@ -81,6 +92,7 @@ func NewService(deps Deps) *Service {
 		site:         deps.Site,
 		location:     location,
 		auth:         deps.Auth,
+		risk:         deps.Risk,
 		quota:        deps.Quota,
 		media:        deps.Media,
 		logger:       deps.Logger,
@@ -447,8 +459,21 @@ func (s *Service) loginSubmit(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 	}
+	// The reference wraps login() in form_valid with ensure_login_allowed and
+	// records a failure in form_invalid; the rewrite runs the identical
+	// sequence here so POST /login locks and is locked like the API path.
+	if authenticated != nil {
+		if err := s.ensureLoginAllowed(r.Context(), accountForm.value("username"), httpapi.From(r).ClientIP); err != nil {
+			accountForm.addNonFieldError(err.Error())
+			authenticated = nil
+		}
+	}
+	if authenticated == nil {
+		s.recordLoginFailure(r.Context(), accountForm.value("username"), httpapi.From(r).ClientIP)
+	}
 	if authenticated != nil {
 		s.signIn(r, authenticated)
+		s.clearLoginFailures(r.Context(), accountForm.value("username"), httpapi.From(r).ClientIP)
 		redirectFound(w, s.loginSuccessURL(r))
 		return nil
 	}
@@ -544,6 +569,31 @@ func (s *Service) signIn(r *http.Request, user httpapi.Principal) {
 	}
 	session.SetInt("user_id", user.ID())
 	session.CycleKey()
+}
+
+// ensureLoginAllowed mirrors the reference's ensure_login_allowed call in
+// LoginPageView.form_valid; a nil gateway (unit tests) lets every login pass.
+func (s *Service) ensureLoginAllowed(ctx context.Context, username, ip string) error {
+	if s.risk == nil {
+		return nil
+	}
+	return s.risk.EnsureLoginAllowed(ctx, username, ip)
+}
+
+// recordLoginFailure mirrors the reference's record_login_failure in
+// form_invalid; the reference only records when a username was submitted.
+func (s *Service) recordLoginFailure(ctx context.Context, username, ip string) {
+	if s.risk == nil || strings.TrimSpace(username) == "" {
+		return
+	}
+	s.risk.RecordLoginFailure(ctx, username, ip)
+}
+
+func (s *Service) clearLoginFailures(ctx context.Context, username, ip string) {
+	if s.risk == nil {
+		return
+	}
+	s.risk.ClearLoginFailures(ctx, username, ip)
 }
 
 func (s *Service) loginSuccessURL(r *http.Request) string {

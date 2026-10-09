@@ -60,6 +60,39 @@ func (s *Service) Summary(ctx context.Context, userID int64) (map[string]any, er
 	}, nil
 }
 
+// InTx exposes a transaction-scoped handle so a caller that already runs inside
+// a BEGIN IMMEDIATE transaction (the generator's terminal-state writes) can
+// settle the quota in that same transaction. The reference settles inside its
+// one atomic block; keeping both writes together is what makes a crash between
+// them impossible.
+func (s *Service) InTx(tx *db.Tx) TxHandle {
+	return TxHandle{service: s, tx: tx}
+}
+
+// TxHandle applies quota mutations to an open transaction.
+type TxHandle struct {
+	service *Service
+	tx      *db.Tx
+}
+
+// FreezeInTx moves amount from available to frozen inside the caller's
+// transaction, mirroring Freeze without opening one of its own.
+func (h TxHandle) FreezeInTx(userID int64, amount int, taskNo string) (*Account, error) {
+	return h.service.freeze(h.tx, userID, amount, taskNo)
+}
+
+// ConsumeInTx settles a succeeded task's frozen amount inside the caller's
+// transaction, mirroring Consume.
+func (h TxHandle) ConsumeInTx(userID int64, amount int, taskNo string) error {
+	return h.service.consume(h.tx, userID, amount, taskNo)
+}
+
+// ReleaseInTx returns a frozen amount inside the caller's transaction. remark
+// selects the ledger text the reference writes on each caller's path.
+func (h TxHandle) ReleaseInTx(userID int64, amount int, taskNo, remark string) error {
+	return h.service.release(h.tx, userID, amount, taskNo, remark)
+}
+
 // Ensure loads the account, creating it when missing and applying the daily
 // reset when the stored date is stale.
 func (s *Service) Ensure(ctx context.Context, userID int64) (*Account, error) {
@@ -87,37 +120,10 @@ func (s *Service) Refresh(ctx context.Context, userID int64) (*Account, error) {
 // Freeze moves amount from the available balance into the frozen balance for a
 // submission, failing with the reference's message when the balance is short.
 func (s *Service) Freeze(ctx context.Context, userID int64, amount int, taskNo string) (*Account, error) {
-	defaultDaily := s.defaultDailyQuota()
 	var account *Account
 	err := s.db.WithImmediate(ctx, func(tx *db.Tx) error {
-		loaded, err := s.accountInTx(tx, userID, defaultDaily)
+		loaded, err := s.freeze(tx, userID, amount, taskNo)
 		if err != nil {
-			return err
-		}
-		if loaded.AvailableQuota < amount {
-			return errors.New("今日免费次数已用完")
-		}
-		beforeAvailable := loaded.AvailableQuota
-		beforeFrozen := loaded.FrozenQuota
-		loaded.AvailableQuota -= amount
-		loaded.FrozenQuota += amount
-		if _, err := tx.Exec(
-			`UPDATE billing_quotaaccount SET available_quota = ?, frozen_quota = ?, updated_at = ? WHERE id = ?`,
-			loaded.AvailableQuota, loaded.FrozenQuota, db.FormatTime(time.Now()), loaded.ID,
-		); err != nil {
-			return err
-		}
-		if err := insertLedger(tx, userID, ledgerRow{
-			changeType:      "freeze",
-			direction:       "out",
-			amount:          amount,
-			beforeAvailable: beforeAvailable,
-			afterAvailable:  loaded.AvailableQuota,
-			beforeFrozen:    beforeFrozen,
-			afterFrozen:     loaded.FrozenQuota,
-			relatedTaskNo:   taskNo,
-			remark:          "任务提交冻结次数",
-		}); err != nil {
 			return err
 		}
 		account = loaded
@@ -129,38 +135,77 @@ func (s *Service) Freeze(ctx context.Context, userID int64, amount int, taskNo s
 	return account, nil
 }
 
+func (s *Service) freeze(tx *db.Tx, userID int64, amount int, taskNo string) (*Account, error) {
+	defaultDaily := s.defaultDailyQuota()
+	loaded, err := s.accountInTx(tx, userID, defaultDaily)
+	if err != nil {
+		return nil, err
+	}
+	if loaded.AvailableQuota < amount {
+		return nil, errors.New("今日免费次数已用完")
+	}
+	beforeAvailable := loaded.AvailableQuota
+	beforeFrozen := loaded.FrozenQuota
+	loaded.AvailableQuota -= amount
+	loaded.FrozenQuota += amount
+	if _, err := tx.Exec(
+		`UPDATE billing_quotaaccount SET available_quota = ?, frozen_quota = ?, updated_at = ? WHERE id = ?`,
+		loaded.AvailableQuota, loaded.FrozenQuota, db.FormatTime(time.Now()), loaded.ID,
+	); err != nil {
+		return nil, err
+	}
+	if err := insertLedger(tx, userID, ledgerRow{
+		changeType:      "freeze",
+		direction:       "out",
+		amount:          amount,
+		beforeAvailable: beforeAvailable,
+		afterAvailable:  loaded.AvailableQuota,
+		beforeFrozen:    beforeFrozen,
+		afterFrozen:     loaded.FrozenQuota,
+		relatedTaskNo:   taskNo,
+		remark:          "任务提交冻结次数",
+	}); err != nil {
+		return nil, err
+	}
+	return loaded, nil
+}
+
 // Consume settles a frozen amount once a task succeeded.
 func (s *Service) Consume(ctx context.Context, userID int64, amount int, taskNo string) error {
-	defaultDaily := s.defaultDailyQuota()
 	return s.db.WithImmediate(ctx, func(tx *db.Tx) error {
-		account, err := s.accountInTx(tx, userID, defaultDaily)
-		if err != nil {
-			return err
-		}
-		if account.FrozenQuota < amount {
-			return errors.New("冻结次数不足")
-		}
-		beforeAvailable := account.AvailableQuota
-		beforeFrozen := account.FrozenQuota
-		account.FrozenQuota -= amount
-		account.TotalGeneratedCount += amount
-		if _, err := tx.Exec(
-			`UPDATE billing_quotaaccount SET frozen_quota = ?, total_generated_count = ?, updated_at = ? WHERE id = ?`,
-			account.FrozenQuota, account.TotalGeneratedCount, db.FormatTime(time.Now()), account.ID,
-		); err != nil {
-			return err
-		}
-		return insertLedger(tx, userID, ledgerRow{
-			changeType:      "consume",
-			direction:       "out",
-			amount:          amount,
-			beforeAvailable: beforeAvailable,
-			afterAvailable:  account.AvailableQuota,
-			beforeFrozen:    beforeFrozen,
-			afterFrozen:     account.FrozenQuota,
-			relatedTaskNo:   taskNo,
-			remark:          "任务成功扣减次数",
-		})
+		return s.consume(tx, userID, amount, taskNo)
+	})
+}
+
+func (s *Service) consume(tx *db.Tx, userID int64, amount int, taskNo string) error {
+	defaultDaily := s.defaultDailyQuota()
+	account, err := s.accountInTx(tx, userID, defaultDaily)
+	if err != nil {
+		return err
+	}
+	if account.FrozenQuota < amount {
+		return errors.New("冻结次数不足")
+	}
+	beforeAvailable := account.AvailableQuota
+	beforeFrozen := account.FrozenQuota
+	account.FrozenQuota -= amount
+	account.TotalGeneratedCount += amount
+	if _, err := tx.Exec(
+		`UPDATE billing_quotaaccount SET frozen_quota = ?, total_generated_count = ?, updated_at = ? WHERE id = ?`,
+		account.FrozenQuota, account.TotalGeneratedCount, db.FormatTime(time.Now()), account.ID,
+	); err != nil {
+		return err
+	}
+	return insertLedger(tx, userID, ledgerRow{
+		changeType:      "consume",
+		direction:       "out",
+		amount:          amount,
+		beforeAvailable: beforeAvailable,
+		afterAvailable:  account.AvailableQuota,
+		beforeFrozen:    beforeFrozen,
+		afterFrozen:     account.FrozenQuota,
+		relatedTaskNo:   taskNo,
+		remark:          "任务成功扣减次数",
 	})
 }
 
@@ -176,39 +221,43 @@ func (s *Service) Release(ctx context.Context, userID int64, amount int, taskNo 
 // It exists as a separate method because §11's Release signature has no remark
 // parameter.
 func (s *Service) ReleaseWithRemark(ctx context.Context, userID int64, amount int, taskNo, remark string) error {
-	defaultDaily := s.defaultDailyQuota()
 	return s.db.WithImmediate(ctx, func(tx *db.Tx) error {
-		account, err := s.accountInTx(tx, userID, defaultDaily)
-		if err != nil {
-			return err
-		}
-		if account.FrozenQuota < amount {
-			amount = account.FrozenQuota
-		}
-		if amount <= 0 {
-			return nil
-		}
-		beforeAvailable := account.AvailableQuota
-		beforeFrozen := account.FrozenQuota
-		account.FrozenQuota -= amount
-		account.AvailableQuota += amount
-		if _, err := tx.Exec(
-			`UPDATE billing_quotaaccount SET available_quota = ?, frozen_quota = ?, updated_at = ? WHERE id = ?`,
-			account.AvailableQuota, account.FrozenQuota, db.FormatTime(time.Now()), account.ID,
-		); err != nil {
-			return err
-		}
-		return insertLedger(tx, userID, ledgerRow{
-			changeType:      "unfreeze",
-			direction:       "in",
-			amount:          amount,
-			beforeAvailable: beforeAvailable,
-			afterAvailable:  account.AvailableQuota,
-			beforeFrozen:    beforeFrozen,
-			afterFrozen:     account.FrozenQuota,
-			relatedTaskNo:   taskNo,
-			remark:          remark,
-		})
+		return s.release(tx, userID, amount, taskNo, remark)
+	})
+}
+
+func (s *Service) release(tx *db.Tx, userID int64, amount int, taskNo, remark string) error {
+	defaultDaily := s.defaultDailyQuota()
+	account, err := s.accountInTx(tx, userID, defaultDaily)
+	if err != nil {
+		return err
+	}
+	if account.FrozenQuota < amount {
+		amount = account.FrozenQuota
+	}
+	if amount <= 0 {
+		return nil
+	}
+	beforeAvailable := account.AvailableQuota
+	beforeFrozen := account.FrozenQuota
+	account.FrozenQuota -= amount
+	account.AvailableQuota += amount
+	if _, err := tx.Exec(
+		`UPDATE billing_quotaaccount SET available_quota = ?, frozen_quota = ?, updated_at = ? WHERE id = ?`,
+		account.AvailableQuota, account.FrozenQuota, db.FormatTime(time.Now()), account.ID,
+	); err != nil {
+		return err
+	}
+	return insertLedger(tx, userID, ledgerRow{
+		changeType:      "unfreeze",
+		direction:       "in",
+		amount:          amount,
+		beforeAvailable: beforeAvailable,
+		afterAvailable:  account.AvailableQuota,
+		beforeFrozen:    beforeFrozen,
+		afterFrozen:     account.FrozenQuota,
+		relatedTaskNo:   taskNo,
+		remark:          remark,
 	})
 }
 

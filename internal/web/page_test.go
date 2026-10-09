@@ -262,6 +262,11 @@ type harnessOptions struct {
 
 func newPageHarness(t *testing.T, options harnessOptions) *pageHarness {
 	t.Helper()
+	return newPageHarnessWithRisk(t, options, nil)
+}
+
+func newPageHarnessWithRisk(t *testing.T, options harnessOptions, risk RiskGateway) *pageHarness {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(&testLogWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg := referenceConfig()
 	cfg.EmailVerification = options.emailVerification
@@ -308,7 +313,7 @@ func newPageHarness(t *testing.T, options harnessOptions) *pageHarness {
 
 	service := NewService(Deps{
 		DB: handle, Config: cfg, Site: site, Location: location, Cipher: cipher,
-		Auth: auth, Quota: quota, Media: media, Logger: logger,
+		Auth: auth, Risk: risk, Quota: quota, Media: media, Logger: logger,
 	})
 
 	store := httpapi.NewSessionStore(handle, false)

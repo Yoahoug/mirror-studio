@@ -646,11 +646,8 @@ func (s *Service) requeueAfterWorkerLoss(ctx context.Context, taskNo string) (*T
 	return result, err
 }
 
-func (s *Service) setTaskFailure(ctx context.Context, taskNo, errorCode, errorMessage, providerRequestID string, rawResponse any) (*Task, bool, error) {
-	var (
-		result   *Task
-		released bool
-	)
+func (s *Service) setTaskFailure(ctx context.Context, taskNo, errorCode, errorMessage, providerRequestID string, rawResponse any) (*Task, error) {
+	var result *Task
 	err := s.db.WithImmediate(ctx, func(tx *db.Tx) error {
 		task, err := s.taskByNoQuery(tx, `SELECT `+taskColumns+` FROM generator_generatetask WHERE task_no = ?`, taskNo)
 		if err != nil {
@@ -666,8 +663,13 @@ func (s *Service) setTaskFailure(ctx context.Context, taskNo, errorCode, errorMe
 		if task.Status == StatusCanceled && task.QuotaFinalized {
 			return nil
 		}
+		// The reference releases the frozen quota inside the same atomic block
+		// that writes the terminal state; a crash can then never strand the
+		// freeze behind an already-final task.
 		if !task.QuotaFinalized {
-			released = true
+			if err := s.quota.InTx(tx).ReleaseInTx(task.UserID, task.QuotaCost, task.TaskNo, "任务失败退回"); err != nil {
+				return err
+			}
 			task.QuotaFinalized = true
 		}
 		payload := newOrderedObject()
@@ -705,13 +707,20 @@ func (s *Service) setTaskFailure(ctx context.Context, taskNo, errorCode, errorMe
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return result, released, nil
+	return result, nil
 }
 
-func (s *Service) setTaskSucceeded(ctx context.Context, taskNo, providerRequestID, providerResponseJSON string) (*Task, bool, error) {
-	result, released, err := s.finalizeTask(ctx, taskNo, func(tx *db.Tx, task *Task, now string) error {
+func (s *Service) setTaskSucceeded(ctx context.Context, taskNo, providerRequestID, providerResponseJSON string) (*Task, error) {
+	result, err := s.finalizeTask(ctx, taskNo, func(tx *db.Tx, task *Task, now string) error {
+		// The reference consumes the frozen quota inside mark_task_succeeded's
+		// atomic block, before the terminal row is written.
+		if !task.QuotaFinalized {
+			if err := s.quota.InTx(tx).ConsumeInTx(task.UserID, task.QuotaCost, task.TaskNo); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(
 			`UPDATE generator_generatetask
 			 SET status = ?, progress_percent = 100, provider_request_id = ?, provider_response_json = ?,
@@ -731,18 +740,14 @@ func (s *Service) setTaskSucceeded(ctx context.Context, taskNo, providerRequestI
 		task.QuotaFinalized = true
 		return nil
 	})
-	return result, released, err
+	return result, err
 }
 
-// finalizeTask applies a terminal-state update exactly once. The caller performs
-// the quota settlement outside the transaction, because SQLite gives this
-// process a single connection and internal/quota opens its own write
-// transaction.
-func (s *Service) finalizeTask(ctx context.Context, taskNo string, apply func(tx *db.Tx, task *Task, now string) error) (*Task, bool, error) {
-	var (
-		result     *Task
-		needsQuota bool
-	)
+// finalizeTask applies a terminal-state update exactly once. Quota settlement
+// happens inside the same transaction through the quota.TxHandle the callback
+// receives, mirroring the reference's single atomic block per terminal state.
+func (s *Service) finalizeTask(ctx context.Context, taskNo string, apply func(tx *db.Tx, task *Task, now string) error) (*Task, error) {
+	var result *Task
 	err := s.db.WithImmediate(ctx, func(tx *db.Tx) error {
 		task, err := s.taskByNoQuery(tx, `SELECT `+taskColumns+` FROM generator_generatetask WHERE task_no = ?`, taskNo)
 		if err != nil {
@@ -758,19 +763,15 @@ func (s *Service) finalizeTask(ctx context.Context, taskNo string, apply func(tx
 		if task.Status == StatusCanceled && task.QuotaFinalized {
 			return nil
 		}
-		if !task.QuotaFinalized {
-			needsQuota = true
-			task.QuotaFinalized = true
-		}
 		return apply(tx, task, db.FormatTime(time.Now().UTC()))
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return result, needsQuota, nil
+	return result, nil
 }
 
-func (s *Service) setTaskCanceled(ctx context.Context, taskNo string) (*Task, bool, error) {
+func (s *Service) setTaskCanceled(ctx context.Context, taskNo string) (*Task, error) {
 	return s.finalizeTask(ctx, taskNo, func(tx *db.Tx, task *Task, now string) error {
 		if task.Status == StatusCanceled {
 			return nil
@@ -799,11 +800,8 @@ type cancelResult struct {
 	settle bool
 }
 
-func (s *Service) cancelTask(ctx context.Context, userID int64, taskNo string) (*Task, bool, error) {
-	var (
-		result *Task
-		settle bool
-	)
+func (s *Service) cancelTask(ctx context.Context, userID int64, taskNo string) (*Task, error) {
+	var result *Task
 	err := s.db.WithImmediate(ctx, func(tx *db.Tx) error {
 		task, err := s.taskByNoQuery(tx,
 			`SELECT `+taskColumns+` FROM generator_generatetask WHERE task_no = ? AND user_id = ? AND is_deleted = 0`,
@@ -819,8 +817,12 @@ func (s *Service) cancelTask(ctx context.Context, userID int64, taskNo string) (
 		case StatusSucceeded, StatusFailed, StatusCanceled:
 			return nil
 		}
+		// The reference writes 用户取消任务 on the same transaction that flips the
+		// row to canceled.
 		if !task.QuotaFinalized {
-			settle = true
+			if err := s.quota.InTx(tx).ReleaseInTx(task.UserID, task.QuotaCost, task.TaskNo, "用户取消任务"); err != nil {
+				return err
+			}
 		}
 		now := db.FormatTime(time.Now().UTC())
 		if _, err := tx.Exec(
@@ -840,16 +842,13 @@ func (s *Service) cancelTask(ctx context.Context, userID int64, taskNo string) (
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return result, settle, nil
+	return result, nil
 }
 
-func (s *Service) deleteTaskHistory(ctx context.Context, userID int64, taskNo string) (*Task, bool, error) {
-	var (
-		result *Task
-		settle bool
-	)
+func (s *Service) deleteTaskHistory(ctx context.Context, userID int64, taskNo string) (*Task, error) {
+	var result *Task
 	err := s.db.WithImmediate(ctx, func(tx *db.Tx) error {
 		task, err := s.taskByNoQuery(tx,
 			`SELECT `+taskColumns+` FROM generator_generatetask WHERE task_no = ? AND user_id = ? AND is_deleted = 0`,
@@ -863,8 +862,12 @@ func (s *Service) deleteTaskHistory(ctx context.Context, userID int64, taskNo st
 		result = task
 		now := db.FormatTime(time.Now().UTC())
 		if task.Status == StatusQueued || task.Status == StatusRunning {
+			// The reference writes 用户删除运行中任务 inside delete_task_history's
+			// transaction, together with the canceled row.
 			if !task.QuotaFinalized {
-				settle = true
+				if err := s.quota.InTx(tx).ReleaseInTx(task.UserID, task.QuotaCost, task.TaskNo, "用户删除运行中任务"); err != nil {
+					return err
+				}
 			}
 			if _, err := tx.Exec(
 				`UPDATE generator_generatetask
@@ -897,9 +900,9 @@ func (s *Service) deleteTaskHistory(ctx context.Context, userID int64, taskNo st
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return result, settle, nil
+	return result, nil
 }
 
 func likePattern(value string) string {
