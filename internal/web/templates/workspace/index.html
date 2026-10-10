@@ -61,21 +61,11 @@
         }
       }
     </style>
-    {% if WORKSPACE_VITE_DEV_URL %}
-      <script type="module">
-        import RefreshRuntime from "{{ WORKSPACE_VITE_DEV_URL }}/@react-refresh";
-        RefreshRuntime.injectIntoGlobalHook(window);
-        window.$RefreshReg$ = () => {};
-        window.$RefreshSig$ = () => (type) => type;
-        window.__vite_plugin_react_preamble_installed__ = true;
-      </script>
-      <script type="module" src="{{ WORKSPACE_VITE_DEV_URL }}/@vite/client"></script>
-      <script type="module" src="{{ WORKSPACE_VITE_DEV_URL }}/src/main.tsx"></script>
-    {% else %}
+    
       <link rel="preload" href="/static/workspace/assets/workspace.css?v={{ WORKSPACE_ASSET_VERSION }}" as="style" onload="this.onload=null;this.rel='stylesheet'">
       <noscript><link rel="stylesheet" href="/static/workspace/assets/workspace.css?v={{ WORKSPACE_ASSET_VERSION }}"></noscript>
       <script type="module" src="/static/workspace/assets/workspace.js?v={{ WORKSPACE_ASSET_VERSION }}"></script>
-    {% endif %}
+    
   </head>
   <body>
     <div

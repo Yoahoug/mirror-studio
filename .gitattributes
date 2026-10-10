@@ -1,0 +1,4 @@
+# 网页参照文件（internal/web/testdata）由测试按字节比对，必须始终以 LF 检出：
+# Windows 上 core.autocrlf=true 会把它转成 CRLF，导致 golden 测试全部失败。
+# 用 text eol=lf 而不是 -text，工作区若已是 CRLF 也只会被归一化，不会出现假修改。
+internal/web/testdata/** text eol=lf

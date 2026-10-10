@@ -255,9 +255,6 @@ type harnessOptions struct {
 	media             *fakeMedia
 	sessionUser       int64
 	emailVerification bool
-	// viteDev selects the branch where the SPA is served by the Vite dev server,
-	// which is the configuration the differential runner uses.
-	viteDev bool
 }
 
 func newPageHarness(t *testing.T, options harnessOptions) *pageHarness {
@@ -270,10 +267,6 @@ func newPageHarnessWithRisk(t *testing.T, options harnessOptions, risk RiskGatew
 	logger := slog.New(slog.NewTextHandler(&testLogWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg := referenceConfig()
 	cfg.EmailVerification = options.emailVerification
-	if options.viteDev {
-		cfg.WorkspaceViteURL = "http://127.0.0.1:3000"
-		cfg.ConsoleViteURL = "http://127.0.0.1:3001"
-	}
 
 	location, err := time.LoadLocation(cfg.TimeZone)
 	if err != nil {
@@ -731,31 +724,4 @@ func TestPageCookiesMatchTheReference(t *testing.T) {
 	if strings.Join(csrf, "|") != "Max-Age=31449600|Path=/|SameSite=Lax" {
 		t.Errorf("csrf cookie attrs = %v", csrf)
 	}
-}
-
-func TestWorkspacePageViteAnonymousMatchesReference(t *testing.T) {
-	harness := newPageHarness(t, harnessOptions{users: []*fakeUser{adminUser()}, viteDev: true})
-	response := harness.get("/workspace")
-	if response.status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", response.status)
-	}
-	assertSameHTML(t, "ref_workspace_vite_anonymous.html", response.body)
-}
-
-func TestWorkspacePageViteAuthenticatedMatchesReference(t *testing.T) {
-	harness := newPageHarness(t, harnessOptions{users: []*fakeUser{adminUser()}, sessionUser: 1, viteDev: true})
-	response := harness.get("/workspace")
-	if response.status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", response.status)
-	}
-	assertSameHTML(t, "ref_workspace_vite_authenticated.html", response.body)
-}
-
-func TestConsolePageViteMatchesReference(t *testing.T) {
-	harness := newPageHarness(t, harnessOptions{users: []*fakeUser{adminUser()}, sessionUser: 1, viteDev: true})
-	response := harness.get("/console/")
-	if response.status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", response.status)
-	}
-	assertSameHTML(t, "ref_console_vite_authenticated.html", response.body)
 }

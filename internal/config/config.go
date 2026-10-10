@@ -37,8 +37,6 @@ type Config struct {
 	BrandName        string
 	BrandEnglishName string
 	BrandTagline     string
-	WorkspaceViteURL string
-	ConsoleViteURL   string
 
 	// Accounts
 	RegisterEnabled     bool
@@ -219,6 +217,7 @@ func Load() (*Config, error) {
 	for _, name := range []string{
 		"ALLOW_INSECURE_PROD", "CONSOLE_HMAC_ENABLED",
 		"GENERATION_TASKS_RUN_INLINE", "NOVELVIZ_RUN_INLINE",
+		"WORKSPACE_VITE_DEV_URL", "CONSOLE_VITE_DEV_URL",
 	} {
 		if strings.TrimSpace(os.Getenv(name)) != "" {
 			return nil, fmt.Errorf("%s was removed in 0.0.1 and must not be set; delete it from the environment", name)
@@ -297,11 +296,6 @@ func Load() (*Config, error) {
 	cfg.BrandName = envStr("BRAND_NAME", "绘镜")
 	cfg.BrandEnglishName = envStr("BRAND_ENGLISH_NAME", "MIRROR STUDIO")
 	cfg.BrandTagline = envStr("BRAND_TAGLINE", "把灵感写成图像，把作品留在自己的空间里")
-
-	if cfg.Debug {
-		cfg.WorkspaceViteURL = strings.TrimSpace(envStr("WORKSPACE_VITE_DEV_URL", "http://127.0.0.1:3000"))
-		cfg.ConsoleViteURL = strings.TrimSpace(envStr("CONSOLE_VITE_DEV_URL", "http://127.0.0.1:3001"))
-	}
 
 	if cfg.RegisterEnabled, err = envBool("REGISTER_ENABLED", true); err != nil {
 		return nil, err

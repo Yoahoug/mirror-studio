@@ -39,11 +39,14 @@ SPA 的运行时渲染输出不得改动（重写的冻结约束），组件、�
 
 ## 运行时接线
 
-- **生产**：Go 从 `go:embed all:static` 直接服务 `/static/**`；SPA 路由由
+- **唯一运行时**：Go 从 `go:embed all:static` 直接服务 `/static/**`；SPA 路由由
   Go 端按 1.x 的 URL 规则返回入口页。镜像内没有 node，也不需要。
-- **开发（DEBUG=1）**：`WORKSPACE_VITE_DEV_URL` / `CONSOLE_VITE_DEV_URL`
-  （默认 `http://127.0.0.1:3000|3001`）被注入页面，指向 Vite 开发服务器；
-  Vite 把 `/api` 代理回 Go 的 8000 端口。
+  服务始终只监听一个端口（`APP_PORT`，默认 8000），页面里不存在指向其它端口的
+  分支——容器只暴露这一个端口。
+- **前端热更新**：单端口的 `npm run local`（Vite middleware，见
+  `docs/LOCAL-MODE.md`）；或按需单独起 `npm run dev:workspace` /
+  `npm run dev:console`（各自端口、自带 HMR，把 `/api` 代理回后端的 8000）。
+  它们只服务自己的页面，不再被 Go 注入到 `/workspace`、`/console` 页面里。
 
 ## 已知保留项（0.0.1 不动）
 

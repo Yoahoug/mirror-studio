@@ -1,0 +1,72 @@
+# 构建容器镜像并发布到 GHCR（GitHub Container Registry）。
+#
+# 镜像：ghcr.io/yoahoug/mirror-studio
+# 标签：VERSION 文件里的版本号（当前 0.0.1）、latest（默认分支）、sha-<短SHA>；
+#       推送 v* 标签时额外产出不带 v 的版本标签。
+# 缓存：docker/build-push-action 走 GitHub Actions 构建缓存（type=gha, mode=max），
+#       前端 npm ci、Go 模块下载与各构建段都会命中，后续构建显著加快。
+name: 构建并发布容器镜像
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/yoahoug/mirror-studio
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 读取 VERSION
+        id: version
+        run: echo "value=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: 启用 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 计算镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.value }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,prefix=sha-
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=mirror-studio
+            org.opencontainers.image.description=单容器 AI 绘图工作室（Go 单二进制 + SQLite + 内嵌前端）
+            org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false

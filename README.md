@@ -41,10 +41,21 @@ cp .env.example .env
 启动：
 
 ```bash
+# 方式一：使用 GitHub Actions 构建并发布到 GHCR 的镜像（推荐，服务器无需构建）
+docker compose pull && docker compose up -d
+
+# 方式二：在服务器上就地构建
 docker compose up -d --build
 ```
 
+镜像由 `.github/workflows/container.yml` 在每次推送到 `main` 时构建并发布到
+`ghcr.io/yoahoug/mirror-studio`（版本标签跟随 `VERSION`，当前 `0.0.1`；
+首次部署私有包需要 `docker login ghcr.io`）。构建走 GitHub Actions 缓存，
+重复构建会复用 npm/Go 依赖层。`IMAGE_TAG` 可覆盖 compose 使用的镜像标签。
+
 启动过程固定为：建库迁移 → 幂等种子（站点配置、管理员、默认渠道）→ 监听；失败会打印原因并退出，用 `docker compose logs app` 查看。
+
+容器只暴露一个端口（`HTTP_PORT`，默认 8000），工作台、管理台与接口都在它上面。
 
 默认访问：
 
@@ -165,6 +176,21 @@ NOVELVIZ_MAX_EPUB_UPLOAD_BYTES=83886080
 
 ## 本地开发
 
+### 只想先跑起来看看（无需数据库 / 无需登录）
+
+```bash
+npm install
+npm run local
+```
+
+一条命令、一个端口拉起全部页面与接口（默认 http://127.0.0.1:8000）：
+工作台在 `/`，管理台在 `/admin`。没有数据库、没有管理员账号、没有登录注册，
+固定使用本地 `local` 账号；生图不配渠道时由本地合成占位图，
+图片直接落在 `local-data/media/`。想接真实生图 / 对话渠道，
+把 `.env.local.example` 复制成 `.env.local` 填密钥即可。详见 `docs/LOCAL-MODE.md`。
+
+### Go 后端（正式部署同构的开发流程）
+
 macOS / Linux（需要 Go ≥ 1.26 与 Node ≥ 20）：
 
 ```bash
@@ -175,13 +201,17 @@ FIELD_CRYPT_KEY=dev-field-crypt-key \
 go run .
 ```
 
-前端开发服务（DEBUG=1 时页面指向 Vite 开发服务器）：
+页面与接口由这一个进程的一个端口提供（默认 8000）；前端资源内嵌在二进制里，
+改完要重新 `npm run build:workspace` / `build:console` 再重启进程：
 
 ```bash
-npm run dev:workspace    # http://127.0.0.1:3000
-npm run dev:console      # http://127.0.0.1:3001
-npm run watch:css
+npm run build:workspace  # 工作台；管理台为 npm run build:console
+npm run watch:css        # SSR 页面样式（static/css/main.css）
 ```
+
+需要热更新时，单独起 Vite 开发服务器（页面由它自己服务，接口代理回 8000）：
+`npm run dev:workspace`（:3000）或 `npm run dev:console`（:3001）；
+也可以直接用单端口的 `npm run local`（见下方）。
 
 测试与类型检查：
 
@@ -190,13 +220,17 @@ go test ./...
 npm run lint
 ```
 
-详见 `docs/DEVELOPMENT.md`（本地开发）、`docs/FRONTEND.md`（前端结构与构建）、`docs/RELEASING.md`（版本与发布）。
+详见 `docs/DEVELOPMENT.md`（Go 本地开发）、`docs/LOCAL-MODE.md`（免数据库本地模式）、
+`docs/FRONTEND.md`（前端结构与构建）、`docs/RELEASING.md`（版本与发布）。
 
 ## 常用命令
 
 ```bash
 # 启动 / 重建
 docker compose up -d --build
+
+# 拉取 GitHub 发布的镜像
+docker compose pull && docker compose up -d
 
 # 查看日志
 docker compose logs -f app
@@ -217,6 +251,8 @@ frontend/shared/       两应用共用的 Vite 配置
 static_src/            SSR 页面 Tailwind 源样式
 static/                构建产物（go:embed 打包，不提交）
 scripts/release.py     发布脚本（VERSION 的唯一写入者）
+scripts/localapi/      本地开发者模式的零依赖 Node 服务（npm run local）
+.github/workflows/     CI：构建容器镜像并发布到 GHCR（container.yml）
 tools/diff/            差分验证工具（开发资产）
 docs/                  契约、审查、验证与开发文档
 ```

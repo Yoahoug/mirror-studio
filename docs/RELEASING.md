@@ -29,15 +29,28 @@ python3 scripts/release.py 0.0.2 --dry-run
 #    打 annotated tag v0.0.2 并推送（--no-tag / --no-push 可跳过对应步骤）
 python3 scripts/release.py 0.0.2
 
-# 4. 构建、验证、部署
+# 4. 构建、验证、部署（镜像由 GitHub Actions 自动构建并发布到 GHCR）
 git checkout v0.0.2
-docker compose up -d --build
+docker compose pull              # 或 docker compose up -d --build 就地构建
+docker compose up -d
 docker compose logs app          # 启动固定为：迁移 → 幂等种子 → 监听
 curl -fsS http://127.0.0.1:8000/login -o /dev/null
 ```
 
 `release.py` 只用 Python 标准库；发布动作是「一个 commit + 一个 annotated tag」，
 tag 消息即该版本的更新说明。
+
+## 容器镜像（GitHub Actions → GHCR）
+
+`.github/workflows/container.yml` 在推送到 `main`、推送 `v*` 标签或手动触发时，
+用仓库根 `Dockerfile` 构建镜像并发布到 `ghcr.io/yoahoug/mirror-studio`：
+
+- **标签**：`VERSION` 的内容（当前 `0.0.1`）、`latest`（默认分支）、
+  `sha-<短SHA>`；推送 `v*` 标签时额外产出不带 `v` 的版本标签。
+- **缓存**：构建使用 GitHub Actions 缓存（`type=gha, mode=max`），
+  前端 `npm ci`、Go 模块下载与各构建段都会命中，重复构建显著加快。
+- **部署端**：`docker-compose.yml` 默认引用该镜像（`IMAGE_TAG` 可覆盖标签）；
+  私有包首次拉取需要 `docker login ghcr.io`。
 
 ## 部署形态（0.0.1）
 

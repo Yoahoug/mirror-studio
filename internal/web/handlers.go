@@ -195,7 +195,6 @@ func (s *Service) logError(r *http.Request, err error) {
 func (s *Service) workspacePage(w http.ResponseWriter, r *http.Request) error {
 	values := s.baseValues(r)
 	values["BRAND_NAME"] = s.site.String("site.brand_name", s.cfg.BrandName)
-	values["WORKSPACE_VITE_DEV_URL"] = s.cfg.WorkspaceViteURL
 	values["WORKSPACE_ASSET_VERSION"] = s.assetVersion
 	values["WORKSPACE_RELEASE_JSON"] = safeHTML(s.releaseJSON())
 	values["IS_AUTHENTICATED"] = httpapi.UserOf(r) != nil
@@ -221,7 +220,6 @@ func (s *Service) consolePage(w http.ResponseWriter, r *http.Request) error {
 	}
 	values := s.baseValues(r)
 	values["BRAND_NAME"] = s.site.String("site.brand_name", s.cfg.BrandName)
-	values["CONSOLE_VITE_DEV_URL"] = s.cfg.ConsoleViteURL
 	return s.render(w, r, "console/index.html", values)
 }
 
@@ -325,14 +323,12 @@ func (s *Service) historyDetailPage(w http.ResponseWriter, r *http.Request, task
 
 func (s *Service) baseValues(r *http.Request) map[string]any {
 	return map[string]any{
-		"request":                map[string]any{"user": requestUser(httpapi.UserOf(r)), "GET": requestQuery(r)},
-		"csrf_token":             csrfTokenOf(r), // read only when a template references it
-		"SITE_NAME":              s.cfg.SiteName,
-		"BRAND_NAME":             s.cfg.BrandName,
-		"BRAND_ENGLISH_NAME":     s.cfg.BrandEnglishName,
-		"BRAND_TAGLINE":          s.cfg.BrandTagline,
-		"WORKSPACE_VITE_DEV_URL": s.cfg.WorkspaceViteURL,
-		"CONSOLE_VITE_DEV_URL":   s.cfg.ConsoleViteURL,
+		"request":            map[string]any{"user": requestUser(httpapi.UserOf(r)), "GET": requestQuery(r)},
+		"csrf_token":         csrfTokenOf(r), // read only when a template references it
+		"SITE_NAME":          s.cfg.SiteName,
+		"BRAND_NAME":         s.cfg.BrandName,
+		"BRAND_ENGLISH_NAME": s.cfg.BrandEnglishName,
+		"BRAND_TAGLINE":      s.cfg.BrandTagline,
 	}
 }
 

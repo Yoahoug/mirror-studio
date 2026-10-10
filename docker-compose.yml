@@ -1,7 +1,9 @@
 name: mirror-studio
 
 # 0.0.1 是单二进制 + SQLite：一个进程内嵌迁移、幂等种子与后台 worker，
-# 因此只有一个服务、一个卷。启动失败会打印原因并退出（docker compose logs app）。
+# 因此只有一个服务、一个卷、只暴露一个端口（HTTP_PORT，默认 8000）：
+# 工作台 /workspace、管理台 /console、接口 /api 与 /console/api 都在它上面。
+# 启动失败会打印原因并退出（docker compose logs app）。
 services:
   app:
     build:
@@ -9,7 +11,9 @@ services:
       # 构建段要拉 npm 依赖与 Go 模块。默认 buildkit 桥接网络在受限环境下
       # 没有外网路由，host 网络最稳；如你的环境桥接可直连，删掉这行即可。
       network: host
-    image: mirror-studio-app
+    # 默认使用 GitHub Actions 构建并发布到 GHCR 的镜像；
+    # 想就地构建（docker compose up -d --build）时 build 段仍然生效。
+    image: ghcr.io/yoahoug/mirror-studio:${IMAGE_TAG:-0.0.1}
     restart: unless-stopped
     env_file:
       - ${APP_ENV_FILE:-.env}
