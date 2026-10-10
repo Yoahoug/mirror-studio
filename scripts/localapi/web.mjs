@@ -13,7 +13,12 @@ import react from '@vitejs/plugin-react';
 import {createServer} from 'vite';
 
 import {ROOT_DIR} from './config.mjs';
+import {applyAppVersionEnv} from '../../frontend/shared/app-version.mjs';
 import {resolveTailwindCssEntry} from '../../frontend/shared/tailwind-entry.mjs';
+
+// 版本号必须在这里就写进 process.env：Vite 在 resolveConfig 阶段读取 VITE_* 环境变量，
+// 之后 import.meta.env.VITE_APP_VERSION 才能在 dev 下拿到值（与生产构建同一个来源）。
+applyAppVersionEnv();
 
 const FRONTEND_DIR = path.join(ROOT_DIR, 'frontend');
 

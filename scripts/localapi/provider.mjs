@@ -1,6 +1,8 @@
 // 渠道调用层：配了真实渠道就调真实接口，没配就用本地确定性结果。
 // 两条路的返回值形状一致，上层（任务流水线）不需要分支。
-import {LLM, PROVIDER, providerConfigured, llmConfigured} from './config.mjs';
+// 对话走 chat.mjs（工作台里可配的中转站）；这里只保留生图与小说场景分析。
+import {chatComplete, resolveChatConfig} from './chat.mjs';
+import {LLM, PROVIDER, providerConfigured} from './config.mjs';
 import {hashSeed, placeholderPNG} from './png.mjs';
 
 function joinURL(baseURL, apiPath) {
@@ -97,67 +99,9 @@ export async function generateImage({
 }
 
 // ── 对话 ──
-
-/**
- * 没有配置 LLM 渠道时返回一段可辨识的本地模拟回复，
- * 让工作台对话面板在零配置下也能走通（回复内容明确标注为本地模拟）。
- */
-export async function chatReply({prompt, history = []}) {
-  if (!llmConfigured) {
-    return localChatReply(prompt);
-  }
-  const messages = [
-    {role: 'system', content: '你是绘镜工作台的创作助手，请用简体中文回答，语气简洁、可执行。'},
-    ...history
-      .filter((item) => item?.parts?.[0]?.text)
-      .map((item) => ({role: item.role === 'model' ? 'assistant' : 'user', content: item.parts[0].text})),
-    {role: 'user', content: prompt},
-  ];
-  const response = await withTimeout(
-    joinURL(LLM.baseURL, LLM.apiPath),
-    {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', Authorization: `Bearer ${LLM.apiKey}`},
-      body: JSON.stringify({model: LLM.modelName, messages, temperature: 0.7}),
-    },
-    LLM.timeoutSeconds,
-  );
-  const raw = await response.text();
-  if (!response.ok) {
-    throw new Error(`对话渠道返回 HTTP ${response.status}：${raw.slice(0, 300)}`);
-  }
-  let decoded;
-  try {
-    decoded = JSON.parse(raw);
-  } catch {
-    throw new Error('对话渠道返回的不是 JSON');
-  }
-  const content = decoded?.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('对话渠道没有返回内容');
-  }
-  return content.trim();
-}
-
-function localChatReply(prompt) {
-  const seed = hashSeed(prompt);
-  const angles = [
-    '先确定主体与视角，再补光线和材质，最后加情绪词。',
-    '把画面拆成「主体 / 环境 / 光线 / 镜头」，每一部分都给一个具体名词。',
-    '同一个构思先用两种不同风格各生成一张，再挑更接近的那张继续迭代。',
-    '如果要图生图，参考图只保留构图，描述里写清想替换掉的元素。',
-  ];
-  return [
-    '【本地模拟回复】当前没有配置 LLM 渠道，下面是本地生成的提示词建议：',
-    '',
-    `你刚才的问题是：${prompt}`,
-    '',
-    `建议：${angles[seed % angles.length]}`,
-    `可以直接试这条提示词：${prompt}，电影级实拍摄影，自然光，浅景深，细节丰富，画面干净`,
-    '',
-    '想接入真实对话渠道，在仓库根目录 .env.local 里填 LLM_BASE_URL / LLM_MODEL_NAME / LLM_API_KEY 后重启本地服务即可。',
-  ].join('\n');
-}
+//
+// 对话（含「AI 生成描述」）已经收敛到 chat.mjs：
+// 那里有工作台可配的中转站、提示词工程师 system prompt 与流式接口。
 
 // ── 小说场景分析 ──
 
@@ -173,44 +117,33 @@ const SCENE_SYSTEM_PROMPT = [
  * @returns {Promise<{scenes: Array, source: string}>}
  */
 export async function planScenes({text, maxScenes, targetPlot = ''}) {
-  if (llmConfigured) {
+  const chat = resolveChatConfig();
+  if (chat.configured) {
     try {
       const scenes = await remoteScenePlan({text, maxScenes, targetPlot});
-      if (scenes.length) return {scenes, source: `${LLM.modelName}（真实渠道）`};
+      if (scenes.length) return {scenes, source: `${chat.model}（真实渠道）`};
     } catch (error) {
       // 真实渠道失败时退回本地抽取，保证本地模式不会因为渠道抖动而卡死。
       console.warn(`[local-api] 场景分析调用真实渠道失败，改用本地抽取：${error.message}`);
     }
   }
-  return {scenes: localScenePlan({text, maxScenes, targetPlot}), source: '本地抽取（未配置 LLM 渠道）'};
+  return {scenes: localScenePlan({text, maxScenes, targetPlot}), source: '本地抽取（未配置对话渠道）'};
 }
 
 async function remoteScenePlan({text, maxScenes, targetPlot}) {
   const instruction = targetPlot
     ? `围绕以下指定剧情只挑 1 个最适合画成电影概念图的镜头：\n${targetPlot}\n`
     : `按情节顺序挑选不超过 ${maxScenes} 个最震撼、最适合电影级概念图的视觉场景。\n`;
-  const response = await withTimeout(
-    joinURL(LLM.baseURL, LLM.apiPath),
-    {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', Authorization: `Bearer ${LLM.apiKey}`},
-      body: JSON.stringify({
-        model: LLM.modelName,
-        temperature: targetPlot ? 0.65 : 0.7,
-        messages: [
-          {role: 'system', content: SCENE_SYSTEM_PROMPT},
-          {role: 'user', content: `${instruction}\n小说全文：\n${text}`},
-        ],
-      }),
-    },
-    LLM.timeoutSeconds,
-  );
-  const raw = await response.text();
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}：${raw.slice(0, 200)}`);
-  }
-  const decoded = JSON.parse(raw);
-  const content = decoded?.choices?.[0]?.message?.content || '';
+  const content = await chatComplete({
+    messages: [
+      {role: 'system', content: SCENE_SYSTEM_PROMPT},
+      {role: 'user', content: `${instruction}\n小说全文：\n${text}`},
+    ],
+    temperature: targetPlot ? 0.65 : 0.7,
+    // 结构化 JSON 输出不需要长时间思考：不发送思考等级字段，保持原来的响应速度。
+    effort: null,
+    timeoutMs: LLM.timeoutSeconds * 1000,
+  });
   return parseScenePlan(content, targetPlot ? 1 : maxScenes);
 }
 

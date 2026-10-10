@@ -4,8 +4,13 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-// Tailwind v4 的 CSS 入口解析与本地模式的单端口开发服务器共用一份实现。
+// 应用版本号（仓库根 VERSION）与 Tailwind v4 的 CSS 入口解析：
+// 本地模式的单端口 dev server 也用同一份实现，避免两处定义漂移。
+import {applyAppVersionEnv} from './app-version.mjs';
 import {resolveTailwindCssEntry} from './tailwind-entry.mjs';
+
+// 必须在 defineConfig 之前执行：Vite 在 resolveConfig 阶段才读取 VITE_* 环境变量。
+applyAppVersionEnv();
 
 const tailwindCssEntry = resolveTailwindCssEntry();
 

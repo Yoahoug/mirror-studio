@@ -6,6 +6,7 @@ import {
   HardDrive,
   Layers,
   Loader2,
+  MemoryStick,
   Play,
   RefreshCcw,
   ScrollText,
@@ -17,6 +18,7 @@ import {
 import {
   fetchComfyLog,
   fetchComfyStatus,
+  freeComfyMemory,
   startComfy,
   type ComfyLogReport,
   type ComfyStatus,
@@ -44,6 +46,7 @@ export default function ComfySettingsModal({ onClose, addToast, onStatusChange }
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
   const [isLoadingLog, setIsLoadingLog] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
+  const [isReleasing, setIsReleasing] = useState(false);
   const [notice, setNotice] = useState("");
   const wasRunningRef = useRef<boolean | null>(null);
   const onStatusChangeRef = useRef(onStatusChange);
@@ -121,6 +124,19 @@ export default function ComfySettingsModal({ onClose, addToast, onStatusChange }
       addToast(error?.message || "启动 ComfyUI 失败", "error");
     } finally {
       setIsStarting(false);
+    }
+  };
+
+  const handleFreeMemory = async () => {
+    setIsReleasing(true);
+    try {
+      const result = await freeComfyMemory();
+      applyStatus(result.status);
+      addToast("已释放 ComfyUI 内存（模型卸载，下次出图会重新加载）", "success");
+    } catch (error: any) {
+      addToast(error?.message || "释放内存失败", "error");
+    } finally {
+      setIsReleasing(false);
     }
   };
 
@@ -214,6 +230,19 @@ export default function ComfySettingsModal({ onClose, addToast, onStatusChange }
               {isStarting || isLoadingStatus ? <Loader2 className="h-4.5 w-4.5 animate-spin" /> : <Play className="h-4.5 w-4.5" />}
               {running ? "ComfyUI 已运行" : isStarting ? "正在启动 ComfyUI" : "启动 ComfyUI"}
             </button>
+
+            {running ? (
+              <button
+                type="button"
+                onClick={() => void handleFreeMemory()}
+                disabled={isReleasing}
+                className="mt-2 flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border border-gray-100 bg-white text-xs font-black text-gray-500 transition hover:border-gray-200 hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                title="让 ComfyUI 卸载模型、归还内存（约 16G；下次出图会重新加载）"
+              >
+                {isReleasing ? <Loader2 className="h-4 w-4 animate-spin" /> : <MemoryStick className="h-4 w-4" />}
+                {isReleasing ? "释放中" : "释放内存（卸载模型）"}
+              </button>
+            ) : null}
 
             {notice ? (
               <div className="mt-3 whitespace-pre-line rounded-2xl border border-indigo-100 bg-indigo-50 px-3.5 py-2.5 text-[11px] leading-5 text-indigo-700">

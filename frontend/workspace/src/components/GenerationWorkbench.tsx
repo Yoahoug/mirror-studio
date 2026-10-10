@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { motion } from "motion/react";
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Copy,
@@ -34,6 +35,9 @@ interface GenerationWorkbenchProps {
   addToast: (message: string, type?: "success" | "error" | "info") => void;
   selectedTaskNo?: string;
   resetSignal?: number;
+  /** 悬浮窗对话「填回描述」的投递（App 只在当前板块是生图板块时下发）。 */
+  fillRequest?: { id: number; text: string } | null;
+  onFillRequestConsumed?: () => void;
   onGenerationSubmitted?: () => void;
 }
 
@@ -346,6 +350,8 @@ export default function GenerationWorkbench({
   addToast,
   selectedTaskNo = "",
   resetSignal = 0,
+  fillRequest = null,
+  onFillRequestConsumed,
   onGenerationSubmitted,
 }: GenerationWorkbenchProps) {
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
@@ -369,6 +375,7 @@ export default function GenerationWorkbench({
   const [progress, setProgress] = useState(0);
   const [previewUrl, setPreviewUrl] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
+  const [isPlaceholderResult, setIsPlaceholderResult] = useState(false);
   const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isHelping, setIsHelping] = useState(false);
@@ -395,6 +402,15 @@ export default function GenerationWorkbench({
   useEffect(() => {
     onGenerationSubmittedRef.current = onGenerationSubmitted;
   }, [onGenerationSubmitted]);
+
+  // 悬浮窗对话「填回描述」：写进创作描述。
+  useEffect(() => {
+    if (!fillRequest) return;
+    setPrompt(fillRequest.text);
+    addToastRef.current("已把对话里的提示词填进创作描述", "success");
+    onFillRequestConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fillRequest]);
 
   const beginTaskSession = () => {
     taskSessionRef.current += 1;
@@ -567,6 +583,7 @@ export default function GenerationWorkbench({
     setPreviewSize(null);
     setIsGenerating(false);
     setIsRestoringTask(false);
+    setIsPlaceholderResult(false);
     window.localStorage.removeItem(ACTIVE_TASK_KEY);
   };
 
@@ -585,6 +602,7 @@ export default function GenerationWorkbench({
     setTaskNo(detail.task_no);
     setTaskStatus(detail.status);
     setProgress(getVisibleProgress(detail));
+    setIsPlaceholderResult(Boolean(detail.placeholder) || detail.channel_name === "本地占位生图");
     setGenerationMode((detail.generation_mode || "text_to_image") as GenerationMode);
     setReferenceImageDataUrl(
       detail.reference_image_data_url || ((detail.reference_image_attached || detail.reference_image_name) && referenceImageDataUrl ? referenceImageDataUrl : ""),
@@ -1525,6 +1543,16 @@ export default function GenerationWorkbench({
                     </div>
                   )}
                 </div>
+
+                {previewUrl && isPlaceholderResult && (
+                  <div className="mt-4 flex items-start gap-2 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-left text-xs font-bold leading-6 text-amber-700">
+                    <AlertTriangle className="mt-1 h-4 w-4 shrink-0" />
+                    <span>
+                      这是本地零配置渠道的占位图（渐变示意图，不含画面内容，仅用于跑通全链路）。配置真实生图渠道后重新生成即可拿到真实图片，也可以切到「Comfy
+                      生图」用本机模型出图。
+                    </span>
+                  </div>
+                )}
 
                 <div className="mt-5 flex flex-col gap-3 text-xs text-gray-400 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-2">

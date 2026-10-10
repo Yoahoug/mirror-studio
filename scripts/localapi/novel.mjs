@@ -120,6 +120,8 @@ function taskView(task) {
     status: task.status,
     progress_percent: task.progress_percent,
     error_message: task.error_message || '',
+    channel_name: task.channel_name || '',
+    placeholder: task.channel_name === '本地占位生图',
     scenes: task.scenes || [],
     images: (task.images || []).map(sceneImageView),
     logs: (store.events[task.id] || []).map((event) => ({
@@ -232,6 +234,8 @@ export function historyItem(task) {
     quota_cost: 0,
     error_code: '',
     error_message: task.error_message || '',
+    channel_name: task.channel_name || '',
+    placeholder: task.channel_name === '本地占位生图',
     topic_id: null,
     book_filename: task.book_filename,
     scene_mode: task.scene_mode,
@@ -528,6 +532,7 @@ async function generateSceneImage(taskId, image) {
       `Visual description: ${image.visual_prompt}`,
     ].join('\n');
     const result = await generateImage({prompt, sizeCode: '1024x1024', qualityCode: 'high'});
+    task.channel_name = result.source === 'provider' ? '真实渠道' : '本地占位生图';
     const token = saveMedia(result.buffer, {
       mimeType: result.mimeType,
       name: `novel-${taskId}-scene-${image.scene_number}`,

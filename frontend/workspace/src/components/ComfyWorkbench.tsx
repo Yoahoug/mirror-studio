@@ -8,6 +8,7 @@ import {
   ImageUp,
   Layers,
   Loader2,
+  MemoryStick,
   Play,
   RefreshCcw,
   Settings2,
@@ -24,6 +25,7 @@ import {
   fetchComfyStatus,
   fetchImageDownloadUrl,
   fetchTaskDetail,
+  freeComfyMemory,
   uploadFileResumable,
   type ChatModel,
   type ComfyLogReport,
@@ -46,6 +48,9 @@ interface ComfyWorkbenchProps {
   addToast: (message: string, type?: "success" | "error" | "info") => void;
   selectedTaskNo?: string;
   resetSignal?: number;
+  /** 悬浮窗对话「填回描述」的投递（App 只在当前板块是生图板块时下发）。 */
+  fillRequest?: { id: number; text: string } | null;
+  onFillRequestConsumed?: () => void;
   onGenerationSubmitted?: () => void;
 }
 
@@ -74,6 +79,8 @@ const resolutionOptions = [
 ];
 
 const ACTIVE_TASK_KEY = "mirror.activeComfyTaskNo";
+// 「模型保持常驻」是本次会话的选择（关掉页面就忘掉），用一个 sessionStorage 记住。
+const KEEP_RESIDENT_KEY = "mirror.comfyKeepResident";
 const runningStatuses = ["queued", "running"];
 const terminalStatuses = ["succeeded", "failed", "canceled"];
 const EXAMPLE_PROMPT = "一只布偶猫在茶杯旁睡觉，温暖的晨光穿过纱帘，木地板反光，写实风格，浅景深";
@@ -322,6 +329,8 @@ export default function ComfyWorkbench({
   addToast,
   selectedTaskNo = "",
   resetSignal = 0,
+  fillRequest = null,
+  onFillRequestConsumed,
   onGenerationSubmitted,
 }: ComfyWorkbenchProps) {
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
@@ -358,6 +367,12 @@ export default function ComfyWorkbench({
   const [isCheckingComfy, setIsCheckingComfy] = useState(false);
   const [issueReport, setIssueReport] = useState<ComfyLogReport | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  // 出图后模型会常驻内存（编码器 + 主模型 + VAE 约 16G），成功后弹一次
+  // 「保持常驻 / 释放内存」；选择保持则本次会话不再询问（sessionStorage）。
+  const [showMemoryPrompt, setShowMemoryPrompt] = useState(false);
+  const [isReleasingMemory, setIsReleasingMemory] = useState(false);
+  const keepResidentRef = useRef(false);
+  const memoryPromptedTaskRef = useRef("");
   const issueCheckedTaskRef = useRef("");
   const didMountRef = useRef(false);
   const pollingTimerRef = useRef<number | null>(null);
@@ -880,6 +895,51 @@ export default function ComfyWorkbench({
     };
   }, [isAuthenticated, previewUrl, taskNo, taskStatus]);
 
+  // 悬浮窗对话「填回描述」：写进创作描述。
+  useEffect(() => {
+    if (!fillRequest) return;
+    setPrompt(fillRequest.text);
+    addToastRef.current("已把对话里的提示词填进创作描述", "success");
+    onFillRequestConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fillRequest]);
+
+  // ── 内存常驻 / 释放 ──
+  // 出图完成后模型会一直驻留（编码器 8.9G + 主模型 6.9G + VAE 0.6G）：
+  // 继续出图时保持常驻最省时间，不再出图就释放。选择「保持常驻」后本次会话不再弹窗。
+  useEffect(() => {
+    keepResidentRef.current = window.sessionStorage.getItem(KEEP_RESIDENT_KEY) === "1";
+  }, []);
+
+  useEffect(() => {
+    if (taskStatus !== "succeeded" || !previewUrl) return;
+    if (keepResidentRef.current) return;
+    if (memoryPromptedTaskRef.current === taskNo) return;
+    memoryPromptedTaskRef.current = taskNo || "latest";
+    setShowMemoryPrompt(true);
+  }, [taskStatus, previewUrl, taskNo]);
+
+  const handleFreeMemory = async () => {
+    setShowMemoryPrompt(false);
+    setIsReleasingMemory(true);
+    try {
+      const result = await freeComfyMemory();
+      setComfyStatus(result.status);
+      addToastRef.current("已释放 ComfyUI 内存（模型卸载，下次出图会重新加载）", "success");
+    } catch (error: any) {
+      addToastRef.current(error?.message || "释放内存失败", "error");
+    } finally {
+      setIsReleasingMemory(false);
+    }
+  };
+
+  const handleKeepResident = () => {
+    keepResidentRef.current = true;
+    window.sessionStorage.setItem(KEEP_RESIDENT_KEY, "1");
+    setShowMemoryPrompt(false);
+    addToastRef.current("模型保持常驻，本次会话不再提醒", "info");
+  };
+
   const handleReferenceImageChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1083,6 +1143,18 @@ export default function ComfyWorkbench({
   const comfyRunning = Boolean(comfyStatus?.running);
   const activeModel = comfyStatus?.models?.find((model) => model.id === comfyModel) || null;
   const stepsSelectable = activeModel?.steps_mode === "selectable";
+  // 内存弹窗里的用量读数：内存 + 第一块显卡的显存（ComfyUI 的 system_stats）。
+  const memoryUsageText = (() => {
+    const stats = comfyStatus?.stats;
+    if (!stats) return "";
+    const parts: string[] = [];
+    const ramUsed = Math.max(0, (stats.ram_total || 0) - (stats.ram_free || 0));
+    if (ramUsed > 0) parts.push(`内存 ${(ramUsed / 1024 ** 3).toFixed(1)}G`);
+    const device = stats.devices?.[0];
+    const vramUsed = Math.max(0, (device?.vram_total || 0) - (device?.vram_free || 0));
+    if (vramUsed > 0) parts.push(`显存 ${(vramUsed / 1024 ** 3).toFixed(1)}G`);
+    return parts.length ? `当前占用 ${parts.join(" · ")}` : "";
+  })();
   const aspectRatio = getAspectRatioFromSizeCode(sizeCodeFromRatio(ratio, resolutionCode));
   const frameMaxWidthClass = aspectRatio >= 1.15 ? "max-w-4xl" : aspectRatio <= 0.88 ? "max-w-xl" : "max-w-2xl";
   const frameStyle = previewSize
@@ -1554,6 +1626,18 @@ export default function ComfyWorkbench({
                   <span className={`h-2 w-2 rounded-full ${comfyRunning ? "bg-emerald-400" : "bg-gray-300"}`} />
                   {comfyRunning ? "ComfyUI 已连接" : "ComfyUI 未连接"}
                 </span>
+                {comfyRunning && !isWorking && (
+                  <button
+                    type="button"
+                    onClick={handleFreeMemory}
+                    disabled={isReleasingMemory}
+                    className="inline-flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-3 py-2 text-xs font-bold text-gray-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                    title="让 ComfyUI 卸载模型、归还内存（下次出图会重新加载）"
+                  >
+                    {isReleasingMemory ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MemoryStick className="h-3.5 w-3.5" />}
+                    {isReleasingMemory ? "释放中" : "释放内存"}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => prompt && navigator.clipboard.writeText(prompt)}
@@ -1685,6 +1769,57 @@ export default function ComfyWorkbench({
             addToast={addToast}
             onStatusChange={setComfyStatus}
           />
+        )}
+        {showMemoryPrompt && (
+          <motion.div
+            key="comfy-memory-prompt"
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/25 p-4 backdrop-blur-sm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowMemoryPrompt(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 320, damping: 28 }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-[1.6rem] border border-white/60 bg-white p-5 shadow-[0_30px_80px_rgba(15,23,42,0.28)]"
+            >
+              <div className="flex items-start gap-3">
+                <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-amber-50 text-amber-500">
+                  <MemoryStick className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-gray-900">出图完成，模型还在内存里</p>
+                  <p className="mt-1 text-[11px] font-bold text-gray-400">{memoryUsageText || "模型与文本编码器仍处于常驻状态"}</p>
+                </div>
+              </div>
+              <p className="mt-3 text-xs leading-6 text-gray-500">
+                主模型 + 文本编码器会一直驻留（约 16G）。继续生图时保持常驻最省时间；
+                暂时不出图就释放，把内存和显存还回系统（下次出图会自动重新加载）。
+              </p>
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row-reverse">
+                <button
+                  type="button"
+                  onClick={handleFreeMemory}
+                  disabled={isReleasingMemory}
+                  className="flex h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[#6d5dfc] text-xs font-black text-white shadow-lg shadow-[#6d5dfc]/20 transition hover:-translate-y-0.5 hover:bg-[#5b4cf2] disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isReleasingMemory ? <Loader2 className="h-4 w-4 animate-spin" /> : <MemoryStick className="h-4 w-4" />}
+                  {isReleasingMemory ? "释放中" : "释放内存"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleKeepResident}
+                  className="flex h-10 flex-1 cursor-pointer items-center justify-center rounded-2xl border border-gray-100 bg-white text-xs font-black text-gray-600 transition hover:border-gray-200 hover:text-black"
+                >
+                  保持常驻（本次会话不再提醒）
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

@@ -7,7 +7,8 @@ export const translations = {
       about: "关于绘镜",
       engine: "绘镜 Creative Engine",
       tagline: "为您提供极致的 AI 创作体验，释放无限创意潜能。",
-      version: "v1.2",
+      // 版本号来自仓库根 VERSION（Vite 注入，见 shared/app-version.mjs）
+      version: `v${import.meta.env.VITE_APP_VERSION || "0.0.0"}`,
       stable: "2026 Stable"
     },
     header: {
@@ -144,7 +145,8 @@ export const translations = {
       about: "About Mirror Lens",
       engine: "Mirror Lens Creative Engine",
       tagline: "Providing you with the ultimate AI creative experience, unleashing infinite creative potential.",
-      version: "v1.2",
+      // 版本号来自仓库根 VERSION（Vite 注入，见 shared/app-version.mjs）
+      version: `v${import.meta.env.VITE_APP_VERSION || "0.0.0"}`,
       stable: "2026 Stable"
     },
     header: {

@@ -1,0 +1,149 @@
+{
+  "2": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen-image-2.1-turbo-int8-convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "3": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "PrimitiveStringMultiline",
+    "inputs": {
+      "value": "A candid full-body photograph of a young woman in her mid-twenties with long wavy black hair, faint freckles across her nose and a calm, level gaze into the camera. She wears an oversized cream ribbed-knit sweater, straight dark blue jeans and white canvas sneakers, standing with both hands in her pockets, weight on her right leg, shoulders relaxed. She is in a bright converted loft studio: a whitewashed brick wall behind her, a tall window on the left softening the daylight, a wooden stool and a large potted monstera plant at the edge of the frame, pale wood floor. Soft directional daylight from the left, gentle shadow on the wall, muted warm-neutral palette. Shot on a 50mm lens at f/2.0, full figure with space above her head, natural skin texture, sharp focus on the face, photorealistic editorial photography."
+    }
+  },
+  "6": {
+    "class_type": "ResolutionSelector",
+    "inputs": {
+      "aspect_ratio": "2:3 (Portrait Photo)",
+      "megapixels": 1.5,
+      "multiple": 32
+    }
+  },
+  "7": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": [
+        "6",
+        0
+      ],
+      "height": [
+        "6",
+        1
+      ],
+      "batch_size": 1
+    }
+  },
+  "17": {
+    "class_type": "TextEncodeQwenImage21",
+    "inputs": {
+      "prompt": [
+        "5",
+        0
+      ],
+      "negative_prompt": "",
+      "resolution": 1024,
+      "clip": [
+        "3",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    }
+  },
+  "18": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "conditioning": [
+        "17",
+        0
+      ]
+    }
+  },
+  "19": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 0
+    }
+  },
+  "20": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "21": {
+    "class_type": "ManualSigmas",
+    "inputs": {
+      "sigmas": "1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0.0"
+    }
+  },
+  "22": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "19",
+        0
+      ],
+      "guider": [
+        "18",
+        0
+      ],
+      "sampler": [
+        "20",
+        0
+      ],
+      "sigmas": [
+        "21",
+        0
+      ],
+      "latent_image": [
+        "7",
+        0
+      ]
+    }
+  },
+  "23": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "22",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    }
+  },
+  "24": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "turbo8-t2i",
+      "images": [
+        "23",
+        0
+      ]
+    }
+  }
+}

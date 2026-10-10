@@ -61,6 +61,8 @@ export default function TopToolbar({
 
   const currentModel = chatModels.find((model) => model.channel_code === selectedModel) || chatModels[0];
   const modelReady = Boolean(currentModel);
+  // 本地开发者模式的入口文件带 data-mode="local"，只有那里才在悬浮窗里配置对话中转站。
+  const isLocalMode = document.getElementById("workspace-root")?.dataset.mode === "local";
   const displayName = userInfo?.display_name || userInfo?.nickname || userInfo?.username || "guest";
   const fallbackAvatarUrl = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userInfo?.username || "admin")}`;
   const avatarUrl = userInfo?.avatar?.trim() || fallbackAvatarUrl;
@@ -204,6 +206,12 @@ export default function TopToolbar({
                         {selectedModel === model.channel_code && <div className="ml-auto h-1.5 w-1.5 rounded-full bg-black" />}
                       </button>
                     ))}
+                    {/* 本地开发者模式：对话渠道在工作台里配置（悬浮窗对话 → 设置） */}
+                    {isLocalMode && chatModels.length > 0 && !chatModels[0].configured && (
+                      <div className="mx-1 mt-1 rounded-2xl border border-amber-100 bg-amber-50/70 px-3 py-2 text-[11px] leading-5 text-amber-700">
+                        当前是本地模拟回复。点工作台右下角的悬浮窗 →「设置」，填接口地址（线上中转站或本机 LM Studio）、模型与密钥后即可用真实模型写提示词。
+                      </div>
+                    )}
                   </div>
                 </motion.div>
               </>
