@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import {CHUNK_SIZE, TTS, UPLOAD_DIR} from './config.mjs';
 import {nextId, nowIso, persist, saveMedia, store} from './store.mjs';
+import {NotFoundError} from './errors.mjs';
 
 export class UploadError extends Error {}
 
@@ -83,13 +84,13 @@ export function findSession(uploadId) {
 
 export function sessionJSON(uploadId) {
   const session = findSession(uploadId);
-  if (!session) throw new UploadError('上传会话不存在或已过期');
+  if (!session) throw new NotFoundError('上传会话不存在或已过期');
   return sessionView(session);
 }
 
 export function saveChunk(uploadId, index, buffer) {
   const session = findSession(uploadId);
-  if (!session) throw new UploadError('上传会话不存在或已过期');
+  if (!session) throw new NotFoundError('上传会话不存在或已过期');
   if (session.status === 'completed') return sessionView(session);
   if (session.status === 'canceled') throw new UploadError('上传会话已取消');
   if (!Number.isInteger(index) || index < 0 || index >= session.total_chunks) {

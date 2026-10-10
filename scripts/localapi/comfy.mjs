@@ -687,6 +687,12 @@ export async function generateWithComfy({
   const {prompt_id: promptId} = JSON.parse(submitText);
   if (!promptId) throw new ComfyError('ComfyUI 没有返回 prompt_id，提交失败');
   onPromptId?.(promptId);
+  if (shouldAbort?.()) {
+    // 取消落在「提交完成」与「任务记住 prompt_id」之间：调用方的取消接口
+    // 拿不到 prompt_id（no-op），只能在这里自己删队列并打断。
+    await cancelComfyPrompt(promptId);
+    throw new ComfyError('任务已取消');
+  }
 
   const startedAt = Date.now();
   const deadline = startedAt + COMFY.timeoutMs;
@@ -718,6 +724,9 @@ export async function generateWithComfy({
   }
 
   if (!entry?.outputs) {
+    // 放弃轮询不等于放弃显存：不删队列并打断，ComfyUI 会继续采样，而调用方的
+    // finally 已经释放 GPU 锁，下一个任务就会撞上同一块显卡。
+    await cancelComfyPrompt(promptId);
     throw new ComfyError(
       `ComfyUI 任务超时（${Math.round(COMFY.timeoutMs / 1000)} 秒）仍未产出图片${await describeRecentComfyIssues()}`,
     );

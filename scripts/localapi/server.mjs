@@ -11,6 +11,7 @@ import {pathToFileURL} from 'node:url';
 
 import * as chatApi from './chat.mjs';
 import * as comfyApi from './comfy.mjs';
+import {NotFoundError} from './errors.mjs';
 import * as consoleApi from './console.mjs';
 import {
   DATA_DIR,
@@ -41,8 +42,8 @@ function sendJSON(res, status, payload) {
   res.end(body);
 }
 
-function ok(res, data) {
-  sendJSON(res, 200, {code: 0, message: 'ok', data});
+function ok(res, data, status = 200) {
+  sendJSON(res, status, {code: 0, message: 'ok', data});
 }
 
 function fail(res, status, message, code = status) {
@@ -461,7 +462,7 @@ route('GET', '/api/tts/voices', async (_req, res) => ok(res, await ttsApi.ttsSta
 
 route('GET', '/api/tts/voices/{name}/audio', async (_req, res, params) => {
   const source = ttsApi.serveVoiceSource(params.name);
-  if (!fs.existsSync(source.file)) return fail(res, 404, '音色来源音频不存在', 404);
+  if (!source || !fs.existsSync(source.file)) return fail(res, 404, '音色来源音频不存在', 404);
   const buffer = fs.readFileSync(source.file);
   res.writeHead(200, {
     'Content-Type': source.mimeType,
@@ -579,7 +580,8 @@ route('GET', '/downloads/{token}', serveDownload);
 
 route('POST', '/api/uploads/sessions', async (req, res) => {
   const payload = await readJSON(req);
-  return ok(res, uploadApi.createSession(payload));
+  // 契约 §6.5 步骤 1：创建/续传会话返回 201。
+  return ok(res, uploadApi.createSession(payload), 201);
 });
 
 route('GET', '/api/uploads/sessions/{uploadId}', async (_req, res, params) =>
@@ -614,18 +616,20 @@ route('POST', '/api/novelviz/books/upload', async (req, res) => {
   if (!/\.epub$/i.test(part.filename) && part.contentType !== 'application/epub+zip') {
     return fail(res, 400, '只支持 EPUB 格式的小说', 400);
   }
+  // 契约 §7.2：EPUB 上传成功返回 201。
   return ok(res, novelApi.registerUploadedBook({
     filename: part.filename,
     displayName: part.filename,
     buffer: part.content,
-  }));
+  }), 201);
 });
 
 route('GET', '/api/novelviz/tasks', async (_req, res) => ok(res, novelApi.listTasks()));
 
 route('POST', '/api/novelviz/tasks', async (req, res) => {
   const payload = await readJSON(req);
-  return ok(res, novelApi.createTask(payload));
+  // 契约 §7.3：创建可视化任务返回 201。
+  return ok(res, novelApi.createTask(payload), 201);
 });
 
 route('GET', '/api/novelviz/tasks/{taskId}', async (_req, res, params) =>
@@ -736,7 +740,8 @@ route('GET', '/console/api/image-channels/', async (_req, res) => ok(res, consol
 
 route('POST', '/console/api/image-channels/', async (req, res) => {
   const payload = await readJSON(req);
-  return ok(res, consoleApi.createChannel(payload));
+  // 契约 §8：新建渠道返回 201。
+  return ok(res, consoleApi.createChannel(payload), 201);
 });
 
 route('PUT', '/console/api/image-channels/{channelId}/', async (req, res, params) => {
@@ -819,18 +824,36 @@ route('GET', '/__local', async (_req, res) => {
  * true  = 已处理（响应已发出）；false = 不属于 API 前缀，调用方决定后续（例如交给 Vite）。
  */
 export async function handleRequest(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    // 畸形请求目标（例如 "GET //"）会让 URL 解析抛出，未捕获时整个进程退出。
+    fail(res, 400, '非法的请求路径', 400);
+    return true;
+  }
   const pathname = url.pathname;
   if (!isApiPath(pathname)) return false;
 
   for (const entry of routes) {
-    const params = match(entry, req.method, pathname);
+    let params;
+    try {
+      params = match(entry, req.method, pathname);
+    } catch {
+      // decodeURIComponent 拒绝非法转义（%zz）——同样是坏路径，不是内部故障。
+      fail(res, 400, '非法的请求路径', 400);
+      return true;
+    }
     if (!params) continue;
     try {
       await entry.handler(req, res, params);
     } catch (error) {
       if (res.headersSent) {
         res.end();
+        return true;
+      }
+      if (error instanceof NotFoundError) {
+        fail(res, error.status, error.message, error.code);
         return true;
       }
       const known = error instanceof ValidationError || error instanceof uploadApi.UploadError || error instanceof novelApi.NovelError || error instanceof comfyApi.ComfyError || error instanceof ttsApi.TtsError;
@@ -866,10 +889,16 @@ function reportListenError(error) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const server = http.createServer((req, res) => {
-    handleRequest(req, res).then((handled) => {
-      if (handled || res.writableEnded) return;
-      fail(res, 404, `这是只跑接口的模式（npm run local:api）；要打开页面请用 npm run local。请求：${req.method} ${req.url}`, 404);
-    });
+    handleRequest(req, res)
+      .then((handled) => {
+        if (handled || res.writableEnded) return;
+        fail(res, 404, `这是只跑接口的模式（npm run local:api）；要打开页面请用 npm run local。请求：${req.method} ${req.url}`, 404);
+      })
+      .catch((error) => {
+        console.error(`[local-api] ${req.method} ${req.url} 处理失败：`, error);
+        if (!res.headersSent) fail(res, 500, error.message || '本地服务内部错误', 500);
+        else res.end();
+      });
   });
   server.on('error', reportListenError);
   server.listen(PORT, HOST, () => {

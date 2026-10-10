@@ -134,7 +134,7 @@ async function checkReferenceUpload() {
       client_upload_id: `check-reference-${Date.now()}`,
     }),
   });
-  assert(session.body.code === 0, `创建上传会话（chunk_size=${session.body.data?.chunk_size}）`);
+  assert(session.body.code === 0 && session.status === 201, `创建上传会话返回 201（chunk_size=${session.body.data?.chunk_size}）`);
   const uploadId = session.body.data.upload_id;
   const chunkSize = session.body.data.chunk_size;
   const buffer = referencePNG;
@@ -352,6 +352,33 @@ async function checkTts() {
   assert(list.body.code === 0 && Array.isArray(list.body.data.items), 'TTS 任务列表接口可用');
 }
 
+// ── 7. 契约边界：坏路径不能打死服务，缺失资源要回 404，分页参数要被夹取 ──
+async function checkContractEdges() {
+  console.log('\n[7] 契约边界与健壮性');
+
+  const badPath = await api('/downloads/%zz');
+  assert(badPath.status === 400, '非法转义路径返回 400（decodeURIComponent 不再抛穿）');
+
+  const alive = await api('/healthz');
+  assert(alive.status === 200, '坏请求之后服务仍然存活');
+
+  const missing = await api('/downloads/m999999');
+  assert(missing.status === 404, '不存在的媒体 token 返回 404 而不是 500');
+
+  const missingUser = await api('/console/api/users/999999/');
+  assert(
+    missingUser.status === 404 && missingUser.body.code === 404000,
+    `管理台不存在的资源返回 404 / 404000（${missingUser.body.message}）`,
+  );
+
+  const users = await api('/console/api/users/?per_page=0&page=99');
+  const pagination = users.body.data?.pagination;
+  assert(
+    pagination?.per_page === 1 && pagination.page === 1 && Number.isFinite(pagination.total_pages),
+    `管理台分页参数被夹取（per_page=${pagination?.per_page}, page=${pagination?.page}, total_pages=${pagination?.total_pages}）`,
+  );
+}
+
 async function main() {
   if (!BASE) {
     await startIsolatedServer();
@@ -364,6 +391,7 @@ async function main() {
     await checkConsole();
     await checkComfy();
     await checkTts();
+    await checkContractEdges();
     console.log('\n全部自检通过 ✅');
   } finally {
     await stopIsolatedServer();

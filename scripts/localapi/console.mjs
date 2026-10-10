@@ -1,6 +1,7 @@
 // 管理台 API：/console/api/*。本地模式只有一个固定账号、一份配置、两个内置渠道，
 // 但字段形状与线上一致，管理台页面可以完整渲染。
 import {localUser, nextId, nowIso, persist, quotaView, store} from './store.mjs';
+import {NotFoundError} from './errors.mjs';
 
 const CATEGORY_LABELS = {
   site: '站点',
@@ -66,16 +67,24 @@ function taskView(task) {
   };
 }
 
+function clampInt(value, fallback, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 function paginate(items, {page = 1, perPage = 20} = {}) {
   const total = items.length;
-  const totalPages = Math.max(1, Math.ceil(total / perPage));
-  const currentPage = Math.min(Math.max(1, page), totalPages);
-  const start = (currentPage - 1) * perPage;
+  // 与 Go 侧 newPagination 一致：每页 1..100，页码夹到末页。
+  const size = clampInt(perPage, 20, 1, 100);
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  const currentPage = clampInt(page, 1, 1, totalPages);
+  const start = (currentPage - 1) * size;
   return {
-    items: items.slice(start, start + perPage),
+    items: items.slice(start, start + size),
     pagination: {
       page: currentPage,
-      per_page: perPage,
+      per_page: size,
       total,
       total_pages: totalPages,
       has_next: currentPage < totalPages,
@@ -137,13 +146,13 @@ export function listUsers({page = 1, perPage = 12, keyword = '', status = ''} = 
 
 export function userDetail(id) {
   const user = store.users.find((item) => item.id === id);
-  if (!user) throw new Error('用户不存在');
+  if (!user) throw new NotFoundError('用户不存在', 404000);
   return userDetailView(user);
 }
 
 export function updateUserQuota(id, payload) {
   const user = store.users.find((item) => item.id === id);
-  if (!user) throw new Error('用户不存在');
+  if (!user) throw new NotFoundError('用户不存在', 404000);
   if (payload.daily_quota !== undefined && payload.daily_quota !== '') {
     const daily = Number.parseInt(payload.daily_quota, 10);
     if (Number.isFinite(daily) && daily >= 0) store.quota.daily_quota = daily;
@@ -268,7 +277,7 @@ export function createChannel(payload) {
 
 export function updateChannel(id, payload) {
   const index = store.channels.findIndex((channel) => channel.id === id);
-  if (index < 0) throw new Error('渠道不存在');
+  if (index < 0) throw new NotFoundError('渠道不存在', 404000);
   const existing = store.channels[index];
   // 这里只做展示层维护：本地模式实际调用哪个渠道由 .env.local 决定。
   store.channels[index] = {
@@ -284,7 +293,7 @@ export function updateChannel(id, payload) {
 
 export function deleteChannel(id) {
   const index = store.channels.findIndex((channel) => channel.id === id);
-  if (index < 0) throw new Error('渠道不存在');
+  if (index < 0) throw new NotFoundError('渠道不存在', 404000);
   store.channels.splice(index, 1);
   persist();
   return {deleted: true};

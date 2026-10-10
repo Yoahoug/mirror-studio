@@ -259,9 +259,25 @@ export function taskJSON(taskId) {
   return taskView(task);
 }
 
+/**
+ * 任务只能引用 NOVEL_DIR 里的一个 EPUB 文件，规则与 Go 端 resolve_book_path 一致：
+ * 取基名、必须 .epub、必须落在 NOVEL_DIR 内、必须存在。此前 book_filename 原样
+ * 拼进 path.join，'../../.env.local' 这类取值可以读到数据目录以外的文件。
+ */
+function safeBookFilename(raw) {
+  const text = String(raw || '').trim();
+  if (!text) throw new NovelError('请先选择一本 EPUB 小说');
+  const base = path.basename(text.replace(/[\\]/g, '/'));
+  if (!base.toLowerCase().endsWith('.epub')) throw new NovelError('请选择 EPUB 小说文件');
+  const root = path.resolve(NOVEL_DIR);
+  const resolved = path.resolve(root, base);
+  if (path.dirname(resolved) !== root) throw new NovelError('EPUB 文件路径不合法');
+  if (!fs.existsSync(resolved)) throw new NovelError('EPUB 文件不存在');
+  return base;
+}
+
 export function createTask(payload) {
-  const filename = String(payload.book_filename || '').trim();
-  if (!filename) throw new NovelError('请先选择一本 EPUB 小说');
+  const filename = safeBookFilename(payload.book_filename);
   const sceneMode = payload.scene_mode === 'targeted' ? 'targeted' : 'auto';
   const targetPlot = String(payload.target_plot || '').trim();
   if (sceneMode === 'targeted' && targetPlot.length < 4) {
@@ -466,7 +482,11 @@ async function runAnalysis(taskId) {
 }
 
 async function runImages(taskId) {
-  const concurrency = Math.max(1, Math.min(8, NOVELVIZ_IMAGE_CONCURRENCY));
+  // ComfyUI 出图要独占 GPU，而锁按设计不排队：多个 worker 并发时，除了拿到锁的
+  // 那个，其余场景会立刻以「显卡正被…占用」失败（3 并发实测只有 1 张能出图，
+  // 重试同样复现）。走真实渠道/占位图时不占 GPU，可以保持并发。
+  const comfy = await comfyStatus().catch(() => null);
+  const concurrency = comfy?.running ? 1 : Math.max(1, Math.min(8, NOVELVIZ_IMAGE_CONCURRENCY));
   let cursor = 0;
 
   const worker = async () => {

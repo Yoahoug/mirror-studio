@@ -18,7 +18,15 @@ import {createLocalWebServer} from './web.mjs';
 let web = null;
 
 const server = http.createServer((req, res) => {
-  const pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
+  let pathname;
+  try {
+    pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
+  } catch {
+    // 畸形请求目标（例如 "GET //"）不得打断开发服务器。
+    res.writeHead(400, {'Content-Type': 'text/plain; charset=utf-8'});
+    res.end('非法的请求路径');
+    return;
+  }
   if (isApiPath(pathname)) {
     handleRequest(req, res).catch((error) => {
       console.error(`[local-api] ${req.method} ${pathname} 处理失败：`, error);

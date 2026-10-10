@@ -147,6 +147,31 @@ function seed(store) {
   }
 }
 
+const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
+const INTERRUPTED_MESSAGE = '本地服务重启导致任务中断，请重新提交。';
+
+// 进程重启后，排在队列里或标着运行中的本地任务不可能再被推进（推进它们的定时器与
+// 子进程随进程一起消失）。启动时统一判失败，否则前端会一直停在「生成中/合成中」。
+function reconcileInterruptedTasks(target) {
+  const now = nowIso();
+  let changed = 0;
+  const interrupt = (item) => {
+    if (!item || TERMINAL_TASK_STATUSES.has(item.status)) return;
+    item.status = 'failed';
+    item.error_message = INTERRUPTED_MESSAGE;
+    item.finished_at = now;
+    if ('error_code' in item) item.error_code = 'local_failure';
+    changed += 1;
+  };
+  for (const task of target.tasks || []) interrupt(task);
+  for (const task of target.ttsTasks || []) interrupt(task);
+  for (const task of target.novelTasks || []) {
+    interrupt(task);
+    for (const image of task.images || []) interrupt(image);
+  }
+  return changed;
+}
+
 function load() {
   ensureDirs();
   if (!fs.existsSync(STORE_FILE)) {
@@ -161,6 +186,7 @@ function load() {
     const merged = {...base, ...parsed};
     merged.counters = {...base.counters, ...(parsed.counters || {})};
     if (!merged.users?.length) seed(merged);
+    if (reconcileInterruptedTasks(merged) > 0) save(merged);
     return merged;
   } catch (error) {
     throw new Error(`本地数据文件损坏：${STORE_FILE}（删除该文件或整个 local-data/ 即可重置）\n${error.message}`);
@@ -168,7 +194,8 @@ function load() {
 }
 
 function save(target = store) {
-  const temporary = `${STORE_FILE}.tmp`;
+  // 临时文件带 pid：同时开着两个 local-api（或上一次进程残留）时不会互相踩坏落盘。
+  const temporary = `${STORE_FILE}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(target, null, 2), 'utf8');
   fs.renameSync(temporary, STORE_FILE);
 }

@@ -606,7 +606,9 @@ export async function ttsLog({engine, lines = 60} = {}) {
 /** 音色来源音频试听（voices/<名>/source.wav，不经过媒体库）。 */
 export function serveVoiceSource(name) {
   const file = voiceSourceFile(name);
-  if (!file) throw new TtsError('音色不存在或没有来源音频', {code: 'E_NOT_FOUND'});
+  // 返回 null 而不是抛错：调用方据此回 404（抛 TtsError 会被统一当成 400，
+  // 路由里那条 404 分支永远走不到）。
+  if (!file) return null;
   return {file, mimeType: 'audio/wav', name: `${path.basename(path.dirname(file))}-source.wav`};
 }
 
@@ -892,28 +894,31 @@ async function runTtsTask(taskNo) {
     return;
   }
 
-  current.status = 'running';
-  current.progress_percent = 8;
-  current.started_at = nowIso();
-  persist();
-
-  const updateProgress = (percent) => {
-    const target = findTtsTask(taskNo);
-    if (!target || target.status !== 'running') return;
-    target.progress_percent = Math.max(target.progress_percent || 0, Math.min(95, Math.round(percent)));
-    persist();
-  };
-
-  // 进度按「3 分钟内 15% → 88%」的时间 pacing 推进：CLI --json 模式不回传进度。
-  const pacing = setInterval(() => {
-    const target = findTtsTask(taskNo);
-    if (!target || target.status !== 'running') return;
-    const elapsed = Date.now() - new Date(target.started_at).getTime();
-    updateProgress(15 + Math.min(1, elapsed / (3 * 60 * 1000)) * 73);
-  }, 2000);
-  if (typeof pacing.unref === 'function') pacing.unref();
-
+  // 拿到 GPU 锁之后的每一步都在 try 里：这条串行链只有 finally 会 release()，
+  // 任何提前抛出的语句（例如 persist 写盘失败）都会让后续所有 TTS 任务永远停在
+  // await previous 上。
+  let pacing = null;
   try {
+    current.status = 'running';
+    current.progress_percent = 8;
+    current.started_at = nowIso();
+    persist();
+
+    const updateProgress = (percent) => {
+      const target = findTtsTask(taskNo);
+      if (!target || target.status !== 'running') return;
+      target.progress_percent = Math.max(target.progress_percent || 0, Math.min(95, Math.round(percent)));
+      persist();
+    };
+
+    // 进度按「3 分钟内 15% → 88%」的时间 pacing 推进：CLI --json 模式不回传进度。
+    pacing = setInterval(() => {
+      const target = findTtsTask(taskNo);
+      if (!target || target.status !== 'running') return;
+      const elapsed = Date.now() - new Date(target.started_at).getTime();
+      updateProgress(15 + Math.min(1, elapsed / (3 * 60 * 1000)) * 73);
+    }, 2000);
+    if (typeof pacing.unref === 'function') pacing.unref();
     const args = buildArgs(current);
     // 注意：必须带 --json，否则 CLI 按普通模式只往 stdout 打产物路径，无法拿到 sr/时长/告警。
     const child = spawn(TTS.python, [TTS.cli, ...args, '--json'], {
@@ -977,7 +982,7 @@ async function runTtsTask(taskNo) {
     if (instancePid) warmedInstancePid.set(finalTask.engine || current.engine, instancePid);
     persist();
   } catch (error) {
-    clearInterval(pacing);
+    if (pacing) clearInterval(pacing);
     runningChildren.delete(taskNo);
     failTtsTask(taskNo, error.message, error instanceof TtsError ? error.code : 'local_failure', error.hint || '');
     throw error;
