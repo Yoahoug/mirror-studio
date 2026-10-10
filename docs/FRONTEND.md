@@ -52,6 +52,38 @@ npm run build     # = build:css → build:workspace → build:console → build:
    - 支持 `[data-theme="dark"]`、`prefers-color-scheme` 系统跟随，持久化至 `localStorage("mirror.theme")`（`light` / `dark` / `system` 三态）。
    - SSR 模板外壳通过 `data-theme` 属性无缝衔接。
 
+## 信息架构重设计 (Information Architecture)
+
+### 1. 创作台 (Workspace)
+- **一级入口**：按用户任务心智划分两大核心板块（层级≤2）：
+  - **「创作」(Create / Studio)**：所有生成能力聚合入口。
+    - **图像创作 (Image)**：包含云端生图（文生图/图生图/参考图上传）与 本地 ComfyUI 生图（Local 专属引擎选项，支持 4 模型与显存监控）。
+    - **语音合成 (Audio)**（Local 专属）：四种模式（音色设计、声音克隆、音色复用、预设音色）+ 音色库抽屉 + 引擎实例与 GPU 管理。
+    - **小说绘卷 (Story)**：EPUB 解析、场景提取、SSE 实时日志、场景图分镜与画卷。
+    - **AI 对话助手 (Assistant)**（Local 专属悬浮窗）：提示词生成与一键「填回描述」。
+  - **「画廊与历史」(History)**：跨模态全任务管理中心。
+    - 统一多模态筛选（全部/图像/语音/小说），结构化回跳对应编辑器，彻底废除 `comfy:`/`tts:`/`novelviz:` 字符串前缀。
+- **为什么这样分**：聚合生产动作（输入）与资产沉淀（产出），不再按技术引擎割裂导航，新手认知成本直降。
+
+### 2. 管理台 (Console)
+- 按管理对象收敛为 5 个核心领域：
+  - **「概览」(Overview)**：核心指标看板与动态。
+  - **「用户」(Users)**：用户检索、配额调整抽屉、状态管理。
+  - **「任务」(Tasks)**：跨引擎任务流排查与生成审计。
+  - **「渠道」(Channels)**：图像与对话渠道健康监控。
+  - **「设置」(Settings)**：站点配置与本地 Comfy/TTS 日志。
+
+### 3. 旧入口 → 新入口对照表
+| 旧入口 | 新入口 | 对应 URL / 状态 |
+| :--- | :--- | :--- |
+| `activeTab === 'create'` (生图) | 创作台 → 图像创作 (云端引擎) | `/workspace?tab=create&sub=image&engine=cloud` |
+| `activeTab === 'comfy'` (ComfyUI) | 创作台 → 图像创作 (ComfyUI 引擎) | `/workspace?tab=create&sub=image&engine=comfy` |
+| `activeTab === 'tts'` (TTS 合成) | 创作台 → 语音合成 | `/workspace?tab=create&sub=audio` |
+| `activeTab === 'novelviz'` (小说绘卷) | 创作台 → 小说绘卷 | `/workspace?tab=create&sub=story` |
+| `activeTab === 'history'` (历史记录) | 画廊与历史 | `/workspace?tab=history` |
+| 悬浮窗对话 | 创作台右下角 AI 助手气泡 | 随创作台常驻，可折叠 |
+| Console Tab 各项 | Console 模块化视图 | `/console?tab=overview\|users\|tasks\|channels\|settings` |
+
 
 ## 运行时接线
 
