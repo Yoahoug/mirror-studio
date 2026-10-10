@@ -138,13 +138,9 @@ func New(handle *db.DB, cipher *crypt.FieldCipher, logger *slog.Logger) *Service
 
 // Lookup returns the raw stored value, whether a row exists, and any error.
 func (s *Service) Lookup(key string) (string, bool, error) {
-	s.mu.RLock()
-	if hit, ok := s.cache[key]; ok && time.Since(hit.at) < s.ttl {
-		s.mu.RUnlock()
-		return hit.value, hit.present, nil
+	if value, present, ok := s.cached(key); ok {
+		return value, present, nil
 	}
-	s.mu.RUnlock()
-
 	row, found, err := s.Get(key)
 	if err != nil {
 		return "", false, err
@@ -153,14 +149,57 @@ func (s *Service) Lookup(key string) (string, bool, error) {
 	if found {
 		value = row.Value
 	}
-	s.mu.Lock()
-	s.cache[key] = cached{value: value, present: found, at: time.Now()}
-	s.mu.Unlock()
+	s.store(key, value, found)
 	return value, found, nil
+}
+
+// LookupTx resolves a key through an open transaction. A caller that already
+// holds a WithImmediate transaction must use this instead of Lookup: the pool
+// hands out a single connection, so a pooled query inside the transaction waits
+// forever for the connection the transaction itself holds.
+func (s *Service) LookupTx(tx *db.Tx, key string) (string, bool, error) {
+	if value, present, ok := s.cached(key); ok {
+		return value, present, nil
+	}
+	row, found, err := s.getFrom(tx, key)
+	if err != nil {
+		return "", false, err
+	}
+	value := ""
+	if found {
+		value = row.Value
+	}
+	s.store(key, value, found)
+	return value, found, nil
+}
+
+func (s *Service) cached(key string) (string, bool, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	hit, ok := s.cache[key]
+	if !ok || time.Since(hit.at) >= s.ttl {
+		return "", false, false
+	}
+	return hit.value, hit.present, true
+}
+
+func (s *Service) store(key, value string, present bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache[key] = cached{value: value, present: present, at: time.Now()}
+}
+
+// rowQuerier is satisfied by the pooled handle and by an open transaction.
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // Get loads a row without consulting the cache.
 func (s *Service) Get(key string) (Row, bool, error) {
+	return s.getFrom(s.DB, key)
+}
+
+func (s *Service) getFrom(queryer rowQuerier, key string) (Row, bool, error) {
 	var (
 		id          int64
 		stored      sql.NullString
@@ -169,7 +208,7 @@ func (s *Service) Get(key string) (Row, bool, error) {
 		category    sql.NullString
 		updatedAt   sql.NullString
 	)
-	err := s.DB.QueryRow(
+	err := queryer.QueryRow(
 		`SELECT id, value_encrypted, is_secret, description, category, updated_at FROM core_siteconfig WHERE key = ?`,
 		key,
 	).Scan(&id, &stored, &isSecret, &description, &category, &updatedAt)
@@ -230,6 +269,20 @@ func (s *Service) Bool(key string, def bool) bool {
 // Int resolves an integer key with a named default.
 func (s *Service) Int(key string, def int) int {
 	value, present, err := s.Lookup(key)
+	if err != nil || !present || strings.TrimSpace(value) == "" {
+		if s.Env != nil {
+			if fromEnv := strings.TrimSpace(s.Env(key)); fromEnv != "" {
+				return Int(fromEnv, def)
+			}
+		}
+		return def
+	}
+	return Int(value, def)
+}
+
+// IntTx is Int for a caller inside an open transaction; see LookupTx.
+func (s *Service) IntTx(tx *db.Tx, key string, def int) int {
+	value, present, err := s.LookupTx(tx, key)
 	if err != nil || !present || strings.TrimSpace(value) == "" {
 		if s.Env != nil {
 			if fromEnv := strings.TrimSpace(s.Env(key)); fromEnv != "" {

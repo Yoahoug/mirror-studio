@@ -136,7 +136,7 @@ func (s *Service) Freeze(ctx context.Context, userID int64, amount int, taskNo s
 }
 
 func (s *Service) freeze(tx *db.Tx, userID int64, amount int, taskNo string) (*Account, error) {
-	defaultDaily := s.defaultDailyQuota()
+	defaultDaily := s.defaultDailyQuotaInTx(tx)
 	loaded, err := s.accountInTx(tx, userID, defaultDaily)
 	if err != nil {
 		return nil, err
@@ -178,7 +178,7 @@ func (s *Service) Consume(ctx context.Context, userID int64, amount int, taskNo 
 }
 
 func (s *Service) consume(tx *db.Tx, userID int64, amount int, taskNo string) error {
-	defaultDaily := s.defaultDailyQuota()
+	defaultDaily := s.defaultDailyQuotaInTx(tx)
 	account, err := s.accountInTx(tx, userID, defaultDaily)
 	if err != nil {
 		return err
@@ -227,7 +227,7 @@ func (s *Service) ReleaseWithRemark(ctx context.Context, userID int64, amount in
 }
 
 func (s *Service) release(tx *db.Tx, userID int64, amount int, taskNo, remark string) error {
-	defaultDaily := s.defaultDailyQuota()
+	defaultDaily := s.defaultDailyQuotaInTx(tx)
 	account, err := s.accountInTx(tx, userID, defaultDaily)
 	if err != nil {
 		return err
@@ -495,6 +495,17 @@ func isUniqueViolation(err error) bool {
 
 func (s *Service) defaultDailyQuota() int {
 	value := s.site.Int("site.default_daily_free_quota", s.cfg.DefaultDailyFreeQuota)
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+// defaultDailyQuotaInTx resolves the same key for a caller that already holds a
+// write transaction. The pooled read would wait for the connection the
+// transaction owns and hang the request (see siteconfig.LookupTx).
+func (s *Service) defaultDailyQuotaInTx(tx *db.Tx) int {
+	value := s.site.IntTx(tx, "site.default_daily_free_quota", s.cfg.DefaultDailyFreeQuota)
 	if value < 0 {
 		return 0
 	}
