@@ -110,7 +110,58 @@ function setArgs(params) {
 
 // ── 引擎元数据（contract.json）与状态聚合 ──
 
-let contractCache = {mtime: -1, data: null};
+const FALLBACK_CONTRACT = {
+  contract_version: 'v1',
+  engines: [
+    {
+      id: 'qwen-design',
+      label: 'Qwen-TTS (设计)',
+      capabilities: ['design', 'voice_save'],
+      model: 'Qwen3-TTS-Design',
+      output_sr: 24000,
+    },
+    {
+      id: 'qwen-base',
+      label: 'Qwen-TTS (基础/克隆)',
+      capabilities: ['clone', 'say', 'voice_save'],
+      model: 'Qwen3-TTS-Base',
+      output_sr: 24000,
+      ref_audio: {min_s: 3, max_s: 30, recommended: '3~10 秒单声道人声'},
+    },
+    {
+      id: 'qwen-preset',
+      label: 'Qwen-TTS (官方预设)',
+      capabilities: ['preset'],
+      model: 'Qwen3-TTS-Preset',
+      output_sr: 24000,
+      speakers: ['zh-female-1', 'zh-male-1'],
+    },
+    {
+      id: 'gptsovits',
+      label: 'GPT-SoVITS',
+      capabilities: ['clone', 'preset'],
+      model: 'GPT-SoVITS-v2',
+      output_sr: 32000,
+      ref_audio: {min_s: 3, max_s: 10, hard: true},
+    },
+    {
+      id: 'indextts',
+      label: 'IndexTTS',
+      capabilities: ['clone'],
+      model: 'IndexTTS',
+      output_sr: 24000,
+      ref_audio: {min_s: 3, max_s: 30},
+    },
+    {
+      id: 'megatts3',
+      label: 'MegaTTS3',
+      capabilities: ['clone'],
+      model: 'MegaTTS3',
+      output_sr: 24000,
+      ref_audio: {min_s: 3, max_s: 30},
+    },
+  ],
+};
 
 function loadContract() {
   try {
@@ -120,7 +171,7 @@ function loadContract() {
     }
     return contractCache.data;
   } catch {
-    return null;
+    return FALLBACK_CONTRACT;
   }
 }
 
