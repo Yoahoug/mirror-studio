@@ -6,33 +6,52 @@ package.json / lockfile / node_modules）合并成了**一个 npm 包**：根
 共享部分在 `frontend/shared/vite.config.base.ts`。
 
 ```
-package.json                  # 唯一的依赖清单与构建脚本
+package.json                     # 唯一的依赖清单与构建脚本
+scripts/check-build-contract.mjs # 构建期产物契约校验（build 链最后一环）
 frontend/
-  shared/vite.config.base.ts  # SPA 配置工厂（react + tailwind v4 + 产物命名）
-  workspace/                  # 用户侧 SPA：index.html + src + vite.config.ts
-  console/                    # 控制台 SPA：同上，产物路径互不重叠
-  tsconfig.json               # 两应用共用的类型检查工程（npm run lint）
-static_src/css/tailwind.css   # SSR 页面样式的 Tailwind v3 入口
-static/                       # 构建产物目录（gitignore，Go 以 go:embed 打包）
-  css/main.css                # ← npm run build:css
-  workspace/                  # ← npm run build:workspace（vite outDir）
-  console/                    # ← npm run build:console
-  favicon.svg, images/        # 仓库内静态资源（随 embed 进入二进制）
+  shared/                        # 两应用唯一共享层（不许出现第二份副本）
+    design/tokens.css            #   全站唯一 token 来源（明暗两套 CSS 变量）
+    ui/                          #   Button/Modal/Toast/ErrorBoundary 等原语
+    hooks/                       #   useTheme/useTaskPolling/useDialogA11y/…
+    i18n/                        #   单一字典（zh/en）+ LanguageProvider，类型安全
+    services/                    #   client(401/CSRF)/auth/console/avatar/…
+    config/app-mode.ts           #   显式模式契约（data-mode 的唯一读者）
+    navigation/                  #   URL 状态解析与导航动作
+    vite.config.base.ts          #   SPA 配置工厂（react + tailwind v4 + 产物命名）
+  workspace/                     # 创作台 SPA：App.tsx + components/ + 过渡期 i18n
+  console/                       # 管理台 SPA：App.tsx（壳层）+ views/ 五个视图
+  tsconfig.json                  # 两应用共用的类型检查工程（npm run lint）
+static_src/css/tailwind.css     # SSR 页面样式的 Tailwind v3 入口（只引用 tokens.css）
+static/                         # 构建产物目录（gitignore，Go 以 go:embed 打包）
+  css/main.css                  # ← npm run build:css
+  workspace/assets/workspace.*  # ← npm run build:workspace（固定名契约）
+  console/assets/console.*      # ← npm run build:console（固定名契约）
+  favicon.svg, images/          # 仓库内静态资源（随 embed 进入二进制）
 ```
 
 ## 构建与产物
 
 ```bash
 npm run build     # = build:css → build:workspace → build:console → build:ssr
+                  #   → scripts/check-build-contract.mjs（契约校验 + 体积表）
 ```
 
-- `build:css`：Tailwind v3 CLI 把 `static_src/css/tailwind.css` 压缩成
-  `static/css/main.css`，供 Go 渲染的 SSR 页面（`/login`、`/register` 等）引用。
-- `build:workspace` / `build:console`：Vite v6 + Tailwind v4（经
-  `@tailwindcss/vite` 插件），产物文件名固定为 `assets/workspace.*` /
-  `assets/console.*`，保持与既有 Go 模板相同的引用路径契约。
-- `build:ssr`：说明性空操作。SSR 页面不是构建产物——模板内嵌在 Go 二进制里，
-  其 CSS 依赖 `build:css`。
+| 脚本 | 一句话说明 |
+| :--- | :--- |
+| `npm run build` | 一条命令产出全部前端产物，末尾校验 4 个固定产物文件名存在（缺失即 fail）并打印 gzip 前后体积表。 |
+| `npm run build:css` | Tailwind v3 CLI 把 SSR 样式压成 `static/css/main.css`。 |
+| `npm run build:workspace` / `build:console` | Vite v6 + Tailwind v4，产物固定名 `assets/workspace.*` / `assets/console.*`。 |
+| `npm run check:build` | 单独重跑产物契约校验。 |
+| `npm run lint` | `tsc --noEmit`，两应用 + shared 全量类型检查。 |
+| `npm run local` | 本地开发者模式：单端口 8000（本地 API + Vite middleware + HMR）。 |
+| `npm run local:check` | 本地 API 接口自检。 |
+| `npm run dev:workspace` / `dev:console` | 分离开发（:3000 / :3001），`/api` 代理回 8000。 |
+
+产物契约（冻结）：`/static/workspace/assets/workspace.{js,css}` 与
+`/static/console/assets/console.{js,css}` 由 `frontend/shared/vite.config.base.ts`
+的 `assetFileNames` 保证；`base` 在 build 时为 `/static/<app>/`、dev 时为 `/`。
+本地专用代码（Comfy/TTS/ChatWidget）经 `React.lazy` 拆为独立 chunk，线上入口包
+不包含这些代码。
 
 > 0.0.2 重构解除旧有「SPA 运行时逐字节一致」约束，正式落地统一设计系统与双模式一致性。
 
@@ -96,10 +115,38 @@ npm run build     # = build:css → build:workspace → build:console → build:
   `npm run dev:console`（各自端口、自带 HMR，把 `/api` 代理回后端的 8000）。
   它们只服务自己的页面，不再被 Go 注入到 `/workspace`、`/console` 页面里。
 
-## 已知保留项（0.0.1 不动）
+## 导航与跳转策略（0.0.2 重写后的契约）
 
-- 根 `package.json` 中 `@google/genai`、`express`、`dotenv`、`tsx`、
-  `@types/express` 已无源码引用，保留是为了依赖解析与既定 lockfile 的
-  逐字节稳定，0.0.2 再清理。
+- **URL 是状态来源**：workspace `?tab=create|history`（兼容旧
+  `?tab=comfy|tts|novelviz`）+ `?task=<task_no>&task_kind=image|comfy|tts`；
+  console `?tab=overview|users|tasks|channels|settings`（兼容旧 `dashboard`）。
+  刷新、前进后退、复制链接分享都能恢复位置。
+- **弹窗入 URL**：`?modal=settings|release|auth` 与 `?auth=login|register`
+  （旧链接继续可用，解析后等价映射）。
+- **鉴权跳转只有一处**：`frontend/shared/services/client.ts` 的 401 处理。
+  线上触发 `setOnAuthRequired`（App 层弹登录框，不整页刷新）；本地模式只报错。
+- **整页刷新的例外清单**（站内其余跳转一律客户端完成）：
+  1. 登出（`shared/services/auth.ts`）——必须重新注入 SSR 外壳（新会话 cookie、
+     新 `data-*`）；本地模式登出不跳转，原地重置。
+  2. 登录成功后按 `?next=` 回跳（`App.tsx handleAuthenticated`）——next 可能指向
+     另一个应用（如 `/console`），浏览器地址栏语义需要整页导航。
+  3. 历史/下载类 `window.location.href = <download_url>`（触发浏览器下载）。
+- **旧入口 → 新入口对照**：见上文信息架构小节的映射表；旧 `comfy:` / `tts:` /
+  `novelviz:` 前缀仅作为历史数据的兼容输入解析，不再作为内部路由机制。
+
+## 质量门禁
+
+- `.github/workflows/frontend-quality.yml`：push/PR 上跑 `npm ci` + `npm run lint`
+  + `npm run build`（含产物契约校验）。
+- `npm run build` 自带 `scripts/check-build-contract.mjs`：4 个固定产物缺失直接
+  fail，并输出 gzip 前后体积表（当前入口包：workspace ≈ 554KB / gzip 166KB，
+  console ≈ 408KB / gzip 124KB，均低于 0.0.1 的 600KB 基线）。
+
+## 已知保留项（0.0.2 不动）
+
+- `frontend/workspace/src/i18n/` 是过渡期本地字典：App/TopToolbar/UserPanel 等
+  壳层已改走 `@shared/i18n`，三个 workbench 大组件的文案仍引用它；随 workbench
+  组件重写（合并为生成页）时移除。
+- `HistorySpace` 两处 `window.location.href`（音频下载）见上方例外清单。
 - `frontend/console/src/components/` 中与 workspace 同名的历史副本组件已随
   S1–S4 清理；若再发现不可达副本，删除门禁是截图零差异。

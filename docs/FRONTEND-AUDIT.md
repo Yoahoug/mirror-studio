@@ -2,7 +2,7 @@
 
 > 审查基线版本：`bf463fa`（feat/local-tts 及相关本地模式改动）  
 > 审查执行：W0.5 运行时与代码审查体检  
-> 状态：全部 14 项候选问题与 12 维度深入排查已定性，待实施闭环。
+> 状态：全部 14 项候选问题与 12 维度深入排查已定性，W1–W6 实施闭环完成（2026-10-10）。
 
 ---
 
@@ -198,3 +198,34 @@
 - **W4 (视觉与动效重写)**：解决 #2 (移动端导航)、#4 (AnimatePresence wait)、#14 (console 响应式表格)、全站高级感与微动效落地。
 - **W5 (台账复验与收尾)**：对本台账所有 P0/P1 条目按原复现步骤逐一进行回归验证并记录通过证据。
 - **W6 (构建管线与门禁)**：死依赖清理、CI lint/build 门禁、构建产物体积监控。
+
+---
+
+## 五、实施闭环结论（W7 回填，2026-10-10）
+
+### §7.2 候选 1–14 逐条闭环状态
+
+| # | 候选问题 | 最终结论 | 证据 |
+| --- | --- | --- | --- |
+| 1 | 本地登出死路径 | **已修** | UserPanel 改走 shared `logout`（模式感知，本地不跳转，15413bb）；线上从 console 登出带 `next=%2Fconsole` 回跳。浏览器实测本地登出停回 `/workspace` 原地。 |
+| 2 | 移动端底部导航 375px 挤压 | **已修** | Sidebar 底部导航从 `grid-cols-6` 改为横滑胶囊布局（c6a5267），375px 实测无换行无重叠。 |
+| 3 | MAX_POLL_ATTEMPTS 50 vs 900 | **已修** | 三工作台统一 900 次 × 2.5s ≈ 37.5 分钟（900 是正确语义：云端排队+慢渠道），Generation 的 MAX_POLL_LIFETIME_MS 8min→35min 与 TTS 对齐（15413bb）。shared `useTaskPolling` 同源常量。 |
+| 4 | AnimatePresence 缺 mode="wait" | **已修** | workspace App.tsx 已补 `mode="wait"`（15413bb）；console 拆包时即带。 |
+| 5 | i18n 漂移 + t: any | **已修** | 两份旧字典删除（console i18n 目录已删，workspace i18n 仅存过渡期本地文案）；shared/i18n 单一字典 + 类型安全 `TranslationDictionary`；console 全部文案走 `t.console.*`；LanguageProvider 双应用接入，语言持久化 `mirror.language`。workspace 大组件（workbench 系）文案仍在过渡字典，随组件重写逐步收敛到 shared。 |
+| 6 | 无暗色模式 | **已修** | tokens.css 明暗两套 + useTheme 三态（light/dark/system）持久化 `mirror.theme`；console 顶栏切换按钮实测暗色正确（无白底漏色）；SSR 外壳 data-theme 对接。 |
+| 7 | 无 URL 状态同步 | **已修** | workspace `?tab=` + `?task=&task_kind=` 结构化入 URL，popstate/刷新/首屏恢复全部生效（cf32558，浏览器实测）；console `?tab=` 自拆包起即 URL 驱动。旧 `?auth=login|register`、`?next=`、`comfy:`/`tts:`/`novelviz:` 前缀仍可解析。 |
+| 8 | 401 两端策略不一致 | **已修** | 401 只在 shared/client.ts 一处处理：线上触发 `setOnAuthRequired` 监听（App 层弹登录框），本地只抛错不跳转；console 旧 302 跳转代码随 apiService 删除（15413bb）。 |
+| 9 | /downloads 尾斜杠分歧 | **已兼容** | shared `formatDownloadUrl` 统一带尾斜杠（Go ServeMux 与 Node 本地 API 都直接命中，无 301）。 |
+| 10 | tailwind.config.js content 指向不存在目录 | **已修** | W1 已改为 `./internal/web/templates/**/*.html` 等真实路径。 |
+| 11 | 无 ErrorBoundary | **已修** | shared ErrorBoundary（类组件 + i18n fallback），console App 每个视图包裹；workspace 侧栏/主区在 W3 已有局部包裹。 |
+| 12 | 图标按钮缺 aria-label / 弹窗无焦点圈定 | **已修** | shared IconButton 强制 aria-label；Modal 内建焦点陷阱+Esc；SettingsModal/AuthModal/Comfy/Tts 设置弹窗接入 `useDialogA11y`（15413bb，浏览器实测焦点圈定/Esc/滚动锁生效）。 |
+| 13 | 生成失败缺统一错误态 | **部分完成** | shared ErrorState/EmptyState 五态组件就绪并被 console 全量使用；三个 workbench 的失败路径仍以 Toast 为主，轮询终止时有"到历史记录手动刷新"提示。剩余收敛依赖 workbench 组件重写（W4 遗留，见"明确不做"）。 |
+| 14 | console 表格窄屏无布局 | **已修** | 新表格全部 `overflow-x-auto` + `min-w-[...]`，375px 可横滑查看全列（浏览器实测）。 |
+
+### 明确不做 / 遗留（附理由）
+
+- **#13 收尾（workbench 内错误卡片）**：三个 workbench 合计约 5000 行，是 W4 建议合并的"生成页"重构主体；在未重写组件结构前逐个打补丁会让迁移更难。当前失败路径有 Toast + 轮询护栏 + 历史可恢复，无死路。留待下一轮把 Comfy/TTS 引擎降级为生成页引擎选项时一并处理。
+- **Markdown 外链 rel（P2）**：react-markdown 组件层未找到用户可控的 `<a target=_blank>` 渲染路径（聊天与小说日志均未开 link 渲染），风险不成立，保持记录。
+- **长列表虚拟化**：历史记录分页加载，千条场景无卡顿证据，不做。
+- **workspace 旧 i18n 过渡字典**：workspace/src/i18n 尚存（App/TopToolbar/UserPanel 已迁 shared，workbench 系未迁）；为保证本轮"能力不丢"的边界，组件级迁移留给 workbench 重写轮。
+
