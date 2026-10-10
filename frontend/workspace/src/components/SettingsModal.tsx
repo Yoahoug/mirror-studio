@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { localAvatar } from "@shared/services/avatar";
 import { AnimatePresence, motion } from "motion/react";
 import {
   BadgeCheck,
@@ -137,7 +138,7 @@ export default function SettingsModal({
   const avatarUrl = useMemo(() => {
     const username = settings?.user.username || "user";
     if (profileForm.avatar.trim()) return profileForm.avatar.trim();
-    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(username)}`;
+    return localAvatar(username);
   }, [profileForm.avatar, settings?.user.username]);
 
   const supportTemplate = useMemo(() => {

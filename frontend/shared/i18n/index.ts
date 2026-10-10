@@ -65,6 +65,8 @@ export const dictionary = {
         releaseNotes: "更新日志",
         logout: "退出登录",
         login: "登录账号",
+        privacy: "隐私与安全",
+        support: "支持与反馈",
       },
       subnav: {
         image: "图像创作",
@@ -401,6 +403,8 @@ export const dictionary = {
         releaseNotes: "Release Notes",
         logout: "Sign Out",
         login: "Sign In",
+        privacy: "Privacy & Security",
+        support: "Support & Feedback",
       },
       subnav: {
         image: "Image Studio",

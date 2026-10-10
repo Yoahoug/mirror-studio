@@ -259,24 +259,15 @@ export default function App() {
 
   return (
     <div className="relative flex min-h-screen overflow-x-hidden bg-brand-bg text-brand-primary transition-colors duration-300">
-      <Sidebar 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
-        isCollapsed={isCollapsed} 
-        setIsCollapsed={setIsCollapsed} 
-        onNewConversation={() => {
-          setSelectedTaskNo("");
-          setSelectedComfyTaskNo("");
-          setSelectedTtsTaskNo("");
-          setWorkbenchResetSignal((value) => value + 1);
-          setActiveTab("create");
-          addToast(t.toasts.newChat);
-        }}
+      <Sidebar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        isCollapsed={isCollapsed}
+        setIsCollapsed={setIsCollapsed}
         onOpenNovelVisualization={openNovelVisualization}
         releaseVersion={releaseInfo?.version}
         showComfy={comfyEnabled}
         showTts={ttsEnabled}
-        t={t.sidebar}
       />
 
       <main className="relative z-0 flex flex-1 flex-col pb-24 md:pb-0">
@@ -294,10 +285,7 @@ export default function App() {
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
             chatModels={chatModels}
-            language={language}
-            onLanguageChange={setLanguage}
             addToast={addToast}
-            t={t}
             userInfo={userInfo}
             accountSummary={accountSummary}
             releaseInfo={releaseInfo}

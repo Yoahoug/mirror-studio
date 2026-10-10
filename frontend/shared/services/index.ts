@@ -1,5 +1,6 @@
 export * from './client';
 export * from './auth';
+export * from './avatar';
 export * from './generation';
 export * from './upload';
 export * from './comfy';
