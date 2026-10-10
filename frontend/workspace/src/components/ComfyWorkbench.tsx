@@ -91,6 +91,7 @@ const MAX_REFERENCE_IMAGE_DIMENSION = 1600;
 const REFERENCE_IMAGE_JPEG_QUALITIES = [0.86, 0.8, 0.74, 0.68];
 const ACTIVE_TASK_RETENTION_MS = 30 * 60 * 1000;
 const POST_SUCCESS_GRACE_MS = 15 * 1000;
+// 与 GenerationWorkbench / shared/hooks/useTaskPolling 保持同一护栏语义（台账 #3）。
 const MAX_POLL_ATTEMPTS = 900;
 const MAX_POLL_ERROR_COUNT = 3;
 const MAX_POLL_LIFETIME_MS = 20 * 60 * 1000;

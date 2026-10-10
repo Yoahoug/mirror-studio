@@ -30,7 +30,7 @@ export class AuthRequiredError extends ApiError {
 
 let authRequiredListener: (() => void) | null = null;
 
-export function setOnAuthRequired(listener: () => void) {
+export function setOnAuthRequired(listener: (() => void) | null) {
   authRequiredListener = listener;
 }
 

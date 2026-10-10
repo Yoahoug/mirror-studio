@@ -12,6 +12,7 @@ import { fetchAccountSummary, fetchChatModels, type AccountSummaryResponse, type
 import { ToastContainer, ToastType } from "./components/Toast";
 import { Language, translations } from "./i18n";
 import { appConfig } from "@shared/config/app-mode";
+import { setOnAuthRequired } from "@shared/services/client";
 import { Skeleton } from "@shared/ui";
 
 const ChatWidget = lazy(() => import("./components/ChatWidget"));
@@ -194,6 +195,18 @@ export default function App() {
     setShowAuth(true);
   };
 
+  // 全局 401 兜底：任何走 shared client 的请求遇到会话失效，统一弹出登录框（台账 #8）。
+  // 组件层已各自处理 AuthRequiredError 的场景不会重复触发（弹窗已开时 openAuth 幂等）。
+  useEffect(() => {
+    setOnAuthRequired(() => {
+      if (appConfig.isOnline) {
+        openAuth("login");
+      }
+    });
+    return () => setOnAuthRequired(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const openSettings = (tab: SettingsTabId = "profile") => {
     setSettingsInitialTab(tab);
     setShowSettings(true);
@@ -299,7 +312,7 @@ export default function App() {
         <div
           className="flex-1 overflow-x-hidden overflow-y-auto scroll-smooth transition-colors duration-300"
         >
-          <AnimatePresence initial={false}>
+          <AnimatePresence initial={false} mode="wait">
             {activeTab === 'history' ? (
               <HistorySpace
                 key="history"

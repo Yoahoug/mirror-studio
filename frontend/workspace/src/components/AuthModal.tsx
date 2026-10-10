@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowRight, KeyRound, Mail, RefreshCw, Send, Sparkles, User, X, type LucideIcon } from "lucide-react";
+import { useDialogA11y } from "@shared/hooks/useDialogA11y";
 import {
   checkRegisterAvailability,
   fetchLoginCaptcha,
@@ -99,6 +100,7 @@ export default function AuthModal({
   onAuthenticated,
   addToast,
 }: AuthModalProps) {
+  const { dialogRef } = useDialogA11y({ open: true, onClose });
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [codeStatus, setCodeStatus] = useState("");
@@ -269,6 +271,11 @@ export default function AuthModal({
       <div className="pointer-events-none absolute bottom-[8%] left-[27%] h-32 w-32 rounded-full bg-sky-200/45 blur-3xl" />
 
       <motion.div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === "login" ? "登录" : "注册"}
+        tabIndex={-1}
         initial={{ opacity: 0, y: 20, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 20, scale: 0.96 }}

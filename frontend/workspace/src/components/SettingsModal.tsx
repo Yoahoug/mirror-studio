@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { localAvatar } from "@shared/services/avatar";
 import { AnimatePresence, motion } from "motion/react";
+import { useDialogA11y } from "@shared/hooks/useDialogA11y";
 import {
   BadgeCheck,
   Clock3,
@@ -90,6 +91,7 @@ export default function SettingsModal({
   initialTab?: SettingsTabId;
   t: any;
 }) {
+  const { dialogRef } = useDialogA11y({ open: true, onClose });
   const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab);
   const [settings, setSettings] = useState<AccountSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -548,6 +550,11 @@ export default function SettingsModal({
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-0 backdrop-blur-sm sm:p-4"
     >
       <motion.div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t.title}
+        tabIndex={-1}
         initial={{ scale: 0.96, opacity: 0, y: 20 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.97, opacity: 0, y: 20 }}

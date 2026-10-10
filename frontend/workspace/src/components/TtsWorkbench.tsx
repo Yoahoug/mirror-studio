@@ -60,6 +60,7 @@ const runningStatuses = ["queued", "running"];
 const terminalStatuses = ["succeeded", "failed", "canceled"];
 const ACTIVE_TASK_RETENTION_MS = 30 * 60 * 1000;
 const POST_SUCCESS_GRACE_MS = 15 * 1000;
+// 与 GenerationWorkbench / shared/hooks/useTaskPolling 保持同一护栏语义（台账 #3）。
 const MAX_POLL_ATTEMPTS = 900;
 const MAX_POLL_ERROR_COUNT = 3;
 const MAX_POLL_LIFETIME_MS = 35 * 60 * 1000;

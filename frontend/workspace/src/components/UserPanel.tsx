@@ -2,7 +2,8 @@ import { motion } from "motion/react";
 import { localAvatar } from "@shared/services/avatar";
 import { LogOut, ShieldCheck, Mail, Globe, Sparkles } from "lucide-react";
 import { useLanguage } from "@shared/i18n";
-import { logout, type UserInfo } from "../services/apiService";
+import { logout } from "@shared/services/auth";
+import type { UserInfo } from "../services/apiService";
 
 export default function UserPanel({
   onClose,

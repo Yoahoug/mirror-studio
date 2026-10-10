@@ -81,9 +81,11 @@ const MAX_REFERENCE_IMAGE_DIMENSION = 1600;
 const REFERENCE_IMAGE_JPEG_QUALITIES = [0.86, 0.8, 0.74, 0.68];
 const ACTIVE_TASK_RETENTION_MS = 30 * 60 * 1000;
 const POST_SUCCESS_GRACE_MS = 15 * 1000;
-const MAX_POLL_ATTEMPTS = 50;
+// 轮询护栏与 Comfy/TTS 工作台同源统一（台账 #3）：900 次 × 2.5s ≈ 37.5 分钟上限，
+// 慢渠道/排队不再被提前放弃；另有连续错误与总时长两道护栏。
+const MAX_POLL_ATTEMPTS = 900;
 const MAX_POLL_ERROR_COUNT = 3;
-const MAX_POLL_LIFETIME_MS = 8 * 60 * 1000;
+const MAX_POLL_LIFETIME_MS = 35 * 60 * 1000;
 const SUBMIT_RETRY_DELAY_MS = 900;
 const SUBMIT_RETRY_MAX_ATTEMPTS = 2;
 

@@ -14,6 +14,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { useDialogA11y } from "@shared/hooks/useDialogA11y";
 import {
   fetchTtsLog,
   fetchTtsStatus,
@@ -55,6 +56,7 @@ function describeSamplingRate(spec: TtsEngineSpec): string {
 }
 
 export default function TtsSettingsModal({ onClose, addToast, onStatusChange }: TtsSettingsModalProps) {
+  const { dialogRef } = useDialogA11y({ open: true, onClose });
   const [status, setStatus] = useState<TtsStatus | null>(null);
   const [logEngine, setLogEngine] = useState("qwen-base");
   const [logText, setLogText] = useState("");
@@ -180,6 +182,11 @@ export default function TtsSettingsModal({ onClose, addToast, onStatusChange }: 
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 p-0 backdrop-blur-sm sm:p-4">
       <motion.div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="TTS 引擎设置"
+        tabIndex={-1}
         initial={{ scale: 0.96, opacity: 0, y: 20 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.97, opacity: 0, y: 20 }}

@@ -15,6 +15,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { useDialogA11y } from "@shared/hooks/useDialogA11y";
 import {
   fetchComfyLog,
   fetchComfyStatus,
@@ -41,6 +42,7 @@ function formatMinutes(ms: number): string {
 }
 
 export default function ComfySettingsModal({ onClose, addToast, onStatusChange }: ComfySettingsModalProps) {
+  const { dialogRef } = useDialogA11y({ open: true, onClose });
   const [status, setStatus] = useState<ComfyStatus | null>(null);
   const [logReport, setLogReport] = useState<ComfyLogReport | null>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
@@ -146,6 +148,11 @@ export default function ComfySettingsModal({ onClose, addToast, onStatusChange }
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 p-0 backdrop-blur-sm sm:p-4">
       <motion.div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="ComfyUI 设置"
+        tabIndex={-1}
         initial={{ scale: 0.96, opacity: 0, y: 20 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.97, opacity: 0, y: 20 }}
