@@ -3,7 +3,7 @@
 本文件是所有版本信息的单一来源：应用内的「更新说明」弹窗由服务端在启动时解析本文件生成，
 `scripts/release.py` 也依赖本文件判断目标版本是否已归档。
 
-## [Unreleased]
+## [0.0.2] - 2026-10-10
 
 ### Changed（前端重构 refactor/frontend-ui）
 
