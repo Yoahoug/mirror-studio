@@ -431,14 +431,20 @@ func (h *Handlers) configBatch(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range items {
 		item, isObject := raw.(map[string]any)
 		if !isObject {
-			h.internalError(w, r, errors.New("配置项必须是对象"))
+			httpapi.BadRequest(w, "配置项必须是对象")
 			return
 		}
 		keyValue, hasKey := item["key"]
 		value, hasValue := item["value"]
 		key, keyIsString := keyValue.(string)
 		if !hasKey || !hasValue || !keyIsString {
-			h.internalError(w, r, errors.New("配置项缺少 key 或 value"))
+			httpapi.BadRequest(w, "配置项缺少 key 或 value")
+			return
+		}
+		if value == nil {
+			// The single-key route rejects a null value the same way; a nil
+			// stringifies to the literal "None" and would be persisted.
+			httpapi.BadRequest(w, "缺少 value")
 			return
 		}
 		if _, err := h.svc.site.Set(
@@ -489,7 +495,10 @@ func (h *Handlers) channelCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if channelType := body["channel_type"]; truthy(channelType) && !validChannelType(channelType) {
+	if channelType, present := body["channel_type"]; present && !validChannelType(channelType) {
+		// The contract rejects any channel_type other than image/llm with 400;
+		// a null or empty value used to be persisted as "None"/"" instead, which
+		// silently removed the channel from dispatch.
 		httpapi.BadRequest(w, "不支持的模型类型")
 		return
 	}
@@ -532,7 +541,9 @@ func (h *Handlers) channelCreate(w http.ResponseWriter, r *http.Request) {
 	if value, present := body["timeout_seconds"]; present {
 		parsed, err := pythonInt(value)
 		if err != nil {
-			h.internalError(w, r, err)
+			// A payload whose numbers do not parse is a client error, the same
+			// as every other malformed-value branch in this API.
+			httpapi.BadRequest(w, err.Error())
 			return
 		}
 		channel.TimeoutSeconds = parsed
@@ -540,7 +551,9 @@ func (h *Handlers) channelCreate(w http.ResponseWriter, r *http.Request) {
 	if value, present := body["max_retries"]; present {
 		parsed, err := pythonInt(value)
 		if err != nil {
-			h.internalError(w, r, err)
+			// A payload whose numbers do not parse is a client error, the same
+			// as every other malformed-value branch in this API.
+			httpapi.BadRequest(w, err.Error())
 			return
 		}
 		channel.MaxRetries = parsed
@@ -551,7 +564,9 @@ func (h *Handlers) channelCreate(w http.ResponseWriter, r *http.Request) {
 	if value, present := body["priority"]; present {
 		parsed, err := pythonInt(value)
 		if err != nil {
-			h.internalError(w, r, err)
+			// A payload whose numbers do not parse is a client error, the same
+			// as every other malformed-value branch in this API.
+			httpapi.BadRequest(w, err.Error())
 			return
 		}
 		channel.Priority = parsed
@@ -611,6 +626,10 @@ func (h *Handlers) channelUpdate(w http.ResponseWriter, r *http.Request, channel
 	if !ok {
 		return
 	}
+	if channelType, present := body["channel_type"]; present && !validChannelType(channelType) {
+		httpapi.BadRequest(w, "不支持的模型类型")
+		return
+	}
 	for _, field := range []string{"name", "channel_type", "provider_name", "base_url", "api_path", "edit_api_path", "model_name"} {
 		value, present := body[field]
 		if !present {
@@ -640,7 +659,9 @@ func (h *Handlers) channelUpdate(w http.ResponseWriter, r *http.Request, channel
 	if value, present := body["priority"]; present {
 		parsed, err := pythonInt(value)
 		if err != nil {
-			h.internalError(w, r, err)
+			// A payload whose numbers do not parse is a client error, the same
+			// as every other malformed-value branch in this API.
+			httpapi.BadRequest(w, err.Error())
 			return
 		}
 		channel.Priority = parsed
@@ -648,7 +669,9 @@ func (h *Handlers) channelUpdate(w http.ResponseWriter, r *http.Request, channel
 	if value, present := body["timeout_seconds"]; present {
 		parsed, err := pythonInt(value)
 		if err != nil {
-			h.internalError(w, r, err)
+			// A payload whose numbers do not parse is a client error, the same
+			// as every other malformed-value branch in this API.
+			httpapi.BadRequest(w, err.Error())
 			return
 		}
 		channel.TimeoutSeconds = parsed
@@ -656,7 +679,9 @@ func (h *Handlers) channelUpdate(w http.ResponseWriter, r *http.Request, channel
 	if value, present := body["max_retries"]; present {
 		parsed, err := pythonInt(value)
 		if err != nil {
-			h.internalError(w, r, err)
+			// A payload whose numbers do not parse is a client error, the same
+			// as every other malformed-value branch in this API.
+			httpapi.BadRequest(w, err.Error())
 			return
 		}
 		channel.MaxRetries = parsed

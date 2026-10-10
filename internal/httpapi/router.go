@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-	"sort"
 	"strings"
 )
 
@@ -63,23 +62,41 @@ func (m *mismatchWriter) Flush() {
 // Unwrap lets http.ResponseController reach the real writer.
 func (m *mismatchWriter) Unwrap() http.ResponseWriter { return m.ResponseWriter }
 
+// djangoMethodNames is http_method_names as the reference declares it. Django's
+// View._allowed_methods() walks that table in order and adds HEAD (injected by
+// setup()) and OPTIONS (always defined), so the Allow header carries that order —
+// the differential harness records the header verbatim.
+var djangoMethodNames = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}
+
 func normalizeAllow(values []string) string {
-	methods := []string{}
+	seen := map[string]bool{}
+	extra := []string{}
 	for _, value := range values {
 		for _, item := range strings.Split(value, ",") {
-			trimmed := strings.TrimSpace(item)
-			if trimmed != "" {
-				methods = append(methods, strings.ToUpper(trimmed))
+			method := strings.ToUpper(strings.TrimSpace(item))
+			if method == "" || seen[method] {
+				continue
+			}
+			seen[method] = true
+			known := false
+			for _, name := range djangoMethodNames {
+				if name == method {
+					known = true
+					break
+				}
+			}
+			if !known {
+				extra = append(extra, method)
 			}
 		}
 	}
-	methods = append(methods, "HEAD", "OPTIONS")
-	sort.Strings(methods)
-	unique := make([]string, 0, len(methods))
-	for index, method := range methods {
-		if index == 0 || methods[index-1] != method {
-			unique = append(unique, method)
+	seen["HEAD"] = true
+	seen["OPTIONS"] = true
+	methods := make([]string, 0, len(seen))
+	for _, name := range djangoMethodNames {
+		if seen[name] {
+			methods = append(methods, name)
 		}
 	}
-	return strings.Join(unique, ", ")
+	return strings.Join(append(methods, extra...), ", ")
 }
