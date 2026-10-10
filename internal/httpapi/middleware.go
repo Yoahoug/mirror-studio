@@ -72,6 +72,27 @@ type Options struct {
 
 const maxBodyBytes = 4 * 1024 * 1024 // DATA_UPLOAD_MAX_MEMORY_SIZE default
 
+// bodyCap bounds how much of a request body is buffered in memory. Ordinary
+// payloads keep the reference's DATA_UPLOAD_MAX_MEMORY_SIZE (4 MiB), but the
+// upload routes must be able to carry what the deployment advertises: a full
+// RESUMABLE_UPLOAD_CHUNK_SIZE chunk or an EPUB up to
+// NOVELVIZ_MAX_EPUB_UPLOAD_BYTES. With the plain 4 MiB cap the default 8 MiB
+// chunk size made every upload above 4 MiB impossible — each full chunk was
+// truncated and then rejected for not matching its own chunk size.
+func bodyCap(cfg *config.Config) int {
+	limit := maxBodyBytes
+	if cfg == nil {
+		return limit
+	}
+	if chunk := int(cfg.ResumableUploadChunkSize); chunk > limit {
+		limit = chunk
+	}
+	if epub := int(cfg.NovelvizMaxEpubBytes); epub > limit {
+		limit = epub
+	}
+	return limit
+}
+
 // Middleware is the composable filter chain every request passes through.
 type Middleware struct {
 	options Options
@@ -127,15 +148,16 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Body capture: the payload parser and CSRF both need the raw bytes, and
 	// Django's request.body is readable more than once.
 	if r.Body != nil {
-		limited := io.LimitReader(r.Body, maxBodyBytes+1)
+		limit := bodyCap(cfg)
+		limited := io.LimitReader(r.Body, int64(limit)+1)
 		body, err := io.ReadAll(limited)
 		if err != nil {
 			m.HTMLStatus(writer, r, http.StatusBadRequest)
 			return
 		}
-		if len(body) > maxBodyBytes {
+		if len(body) > limit {
 			state.TooBig = true
-			body = body[:maxBodyBytes]
+			body = body[:limit]
 		}
 		state.Body = body
 		_ = r.Body.Close()
