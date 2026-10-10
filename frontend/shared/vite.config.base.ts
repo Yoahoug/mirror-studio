@@ -31,13 +31,16 @@ export function createSpaConfig({root, outDir, assetName, port}: SpaConfigOption
   // - Go 后端开发（DEBUG=1 go run .）：8000 上是 Go 服务本身。
   // 前端只认相对路径，两种后端下代码都不需要改动。
   const apiTarget = process.env.LOCAL_API_TARGET || 'http://127.0.0.1:8000';
-  return defineConfig(() => {
+  const sharedDir = path.resolve(root, '../shared');
+  return defineConfig(({command}) => {
     return {
       root,
+      base: command === 'build' ? `/static/${assetName}/` : '/',
       plugins: [react(), tailwindcss()],
       resolve: {
         alias: {
           '@': path.resolve(root, '.'),
+          '@shared': sharedDir,
           // 仅重定向裸说明符 `tailwindcss`（CSS @import 使用），不匹配 `tailwindcss/...` 子路径。
           tailwindcss: tailwindCssEntry,
         },

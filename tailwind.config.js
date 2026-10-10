@@ -1,7 +1,9 @@
+/** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
-    './templates/**/*.html',
-    './apps/**/*.py',
+    './internal/web/templates/**/*.html',
+    './static_src/**/*.{css,js}',
+    './frontend/shared/**/*.{ts,tsx,css}',
     './frontend/console/src/**/*.{ts,tsx}',
     './frontend/workspace/src/**/*.{ts,tsx}',
   ],
@@ -9,30 +11,42 @@ module.exports = {
     extend: {
       colors: {
         brand: {
-          primary: '#1a1a1a',
-          muted: '#6b7280',
-          border: '#e5e7eb',
-          bg: '#f9fafb',
-          50: '#eef4ff',
-          100: '#d9e6ff',
-          500: '#2f6bff',
-          600: '#2557d8',
-          700: '#1d45aa'
+          bg: 'var(--color-bg, #f8f9fc)',
+          surface: 'var(--color-surface, #ffffff)',
+          primary: 'var(--color-ink, #1a1a1a)',
+          secondary: 'var(--color-ink-secondary, #4b5563)',
+          muted: 'var(--color-muted, #6b7280)',
+          submuted: 'var(--color-submuted, #9ca3af)',
+          border: 'var(--color-border, #e5e7eb)',
+          accent: 'var(--color-accent, #6d5dfc)',
+          'accent-hover': 'var(--color-accent-hover, #5b4ce0)',
         },
-        accent: '#14b8a6',
-        warning: '#f97316'
+        semantic: {
+          success: 'var(--color-success, #10b981)',
+          warning: 'var(--color-warning, #f59e0b)',
+          danger: 'var(--color-danger, #ef4444)',
+          info: 'var(--color-info, #3b82f6)',
+        },
       },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace']
+        sans: ['var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif)'],
+        mono: ['var(--font-mono, ui-monospace, SFMono-Regular, "JetBrains Mono", monospace)'],
       },
       boxShadow: {
-        soft: '0 20px 60px rgba(15, 23, 42, 0.08)'
+        raised: 'var(--shadow-raised, 0 1px 3px 0 rgba(15, 23, 42, 0.04))',
+        floating: 'var(--shadow-floating, 0 10px 25px -5px rgba(15, 23, 42, 0.06))',
+        overlay: 'var(--shadow-overlay, 0 24px 48px -12px rgba(15, 23, 42, 0.16))',
       },
       borderRadius: {
-        panel: '18px'
-      }
-    }
+        xs: 'var(--radius-xs, 6px)',
+        sm: 'var(--radius-sm, 8px)',
+        md: 'var(--radius-md, 12px)',
+        lg: 'var(--radius-lg, 16px)',
+        xl: 'var(--radius-xl, 22px)',
+        '2xl': 'var(--radius-2xl, 28px)',
+        panel: 'var(--radius-xl, 22px)',
+      },
+    },
   },
-  plugins: []
+  plugins: [],
 };

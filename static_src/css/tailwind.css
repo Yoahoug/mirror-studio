@@ -1,17 +1,16 @@
-@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;800;900&family=Nunito+Sans:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
+@import "../../frontend/shared/design/tokens.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  :root {
-    color-scheme: light;
-  }
-
   body {
-    font-family: "Nunito Sans", "Noto Sans SC", sans-serif;
-    @apply text-slate-900 antialiased;
+    font-family: var(--font-sans);
+    background-color: var(--color-bg);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   h1,
@@ -19,7 +18,8 @@
   h3,
   h4,
   .font-display {
-    font-family: "Rubik", "Noto Sans SC", sans-serif;
+    font-family: var(--font-sans);
+    letter-spacing: -0.025em;
   }
 }
 
@@ -29,23 +29,23 @@
   }
 
   .page-frame {
-    background:
-      radial-gradient(circle at top left, rgba(76, 108, 255, 0.18), transparent 26%),
-      radial-gradient(circle at 82% 14%, rgba(13, 148, 136, 0.12), transparent 22%),
-      linear-gradient(180deg, #fbf7ef 0%, #f6f7fb 48%, #eef3fb 100%);
+    background-color: var(--color-bg);
     @apply min-h-screen;
-  }
-
-  .page-orb {
-    @apply pointer-events-none fixed -z-10 rounded-full blur-3xl;
   }
 
   .nav-shell {
     @apply sticky top-0 z-40 px-4 pt-4;
   }
 
+  /* Quiet Minimal Light 样式的 Nav 卡片 */
   .nav-card {
-    @apply mx-auto max-w-7xl rounded-[26px] border border-white/70 bg-white/80 shadow-[0_20px_70px_rgba(15,23,42,0.08)] backdrop-blur-xl;
+    background: color-mix(in srgb, var(--color-surface) 85%, transparent);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--shadow-raised);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    @apply mx-auto max-w-7xl;
   }
 
   .brand-lockup {
@@ -53,8 +53,11 @@
   }
 
   .brand-mark {
-    background: linear-gradient(135deg, #111827 0%, #245dff 58%, #14b8a6 100%);
-    @apply flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-black tracking-[0.18em] text-white shadow-[0_16px_36px_rgba(37,99,235,0.24)];
+    background: var(--color-ink);
+    color: var(--color-surface);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-raised);
+    @apply flex h-10 w-10 items-center justify-center text-sm font-black tracking-[0.16em];
   }
 
   .brand-copy {
@@ -62,74 +65,100 @@
   }
 
   .brand-name {
-    @apply text-lg font-bold tracking-tight text-slate-950;
+    color: var(--color-ink);
+    @apply text-base font-bold tracking-tight;
   }
 
   .brand-subname {
-    @apply mt-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400;
+    color: var(--color-submuted);
+    @apply mt-1 text-[11px] font-semibold uppercase tracking-[0.22em];
   }
 
   .nav-link {
-    @apply rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition duration-200 hover:bg-white hover:text-slate-950;
+    color: var(--color-muted);
+    border-radius: var(--radius-full);
+    transition: all var(--duration-fast) var(--ease-standard);
+    @apply px-3 py-1.5 text-sm font-semibold;
   }
 
+  .nav-link:hover {
+    background-color: var(--color-surface-hover);
+    color: var(--color-ink);
+  }
+
+  /* 面板卡片 */
   .panel {
-    @apply rounded-panel border border-white/70 bg-white/80 shadow-soft backdrop-blur-md;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-floating);
+    transition: box-shadow var(--duration-normal) var(--ease-standard);
   }
 
+  .panel:hover {
+    box-shadow: var(--shadow-overlay);
+  }
+
+  /* 主行动按钮 */
   .btn-primary {
-    background: linear-gradient(135deg, #111827 0%, #275df4 62%, #4788ff 100%);
-    @apply inline-flex items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_32px_rgba(37,99,235,0.28)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_24px_48px_rgba(37,99,235,0.22)];
+    background: var(--color-ink);
+    color: var(--color-surface);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-raised);
+    transition: all var(--duration-fast) var(--ease-standard);
+    @apply inline-flex items-center justify-center px-4 py-2.5 text-sm font-semibold;
   }
 
+  .btn-primary:hover {
+    opacity: 0.92;
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-floating);
+  }
+
+  /* 次行动按钮 */
   .btn-secondary {
-    @apply inline-flex items-center justify-center rounded-2xl border border-white/80 bg-white/70 px-5 py-3 text-sm font-semibold text-slate-700 shadow-[0_8px_22px_rgba(15,23,42,0.05)] transition duration-200 hover:-translate-y-0.5 hover:border-slate-200 hover:bg-white hover:text-slate-950;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    transition: all var(--duration-fast) var(--ease-standard);
+    @apply inline-flex items-center justify-center px-4 py-2.5 text-sm font-semibold;
+  }
+
+  .btn-secondary:hover {
+    border-color: var(--color-ink);
+    background-color: var(--color-surface-hover);
   }
 
   .section-kicker {
-    @apply inline-flex items-center rounded-full border border-white/80 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.24em] text-slate-500 shadow-[0_10px_24px_rgba(15,23,42,0.05)];
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    color: var(--color-muted);
+    border-radius: var(--radius-full);
+    @apply inline-flex items-center px-3.5 py-1.5 text-xs font-semibold uppercase tracking-[0.2em];
   }
 
   .section-title {
-    @apply font-display text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl lg:text-5xl;
+    color: var(--color-ink);
+    @apply text-2xl font-bold tracking-tight sm:text-3xl;
   }
 
   .section-body {
-    @apply text-base leading-8 text-slate-600 sm:text-lg;
+    color: var(--color-muted);
+    @apply text-sm leading-relaxed sm:text-base;
   }
 
   .metric-card {
-    @apply rounded-[24px] border border-white/80 bg-white/75 p-5 shadow-[0_16px_40px_rgba(15,23,42,0.06)] backdrop-blur;
-  }
-
-  .feature-card {
-    @apply rounded-[30px] border border-white/80 bg-white/75 p-7 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur;
-  }
-
-  .feature-card-dark {
-    background: radial-gradient(circle at top right, rgba(71, 136, 255, 0.25), transparent 35%), linear-gradient(145deg, #0f172a 0%, #111827 100%);
-    @apply rounded-[30px] border border-slate-900/60 p-7 text-white shadow-[0_32px_80px_rgba(15,23,42,0.22)];
-  }
-
-  .step-card {
-    @apply rounded-[28px] border border-white/80 bg-white/80 p-6 shadow-[0_18px_42px_rgba(15,23,42,0.07)] backdrop-blur;
-  }
-
-  .price-card {
-    @apply relative overflow-hidden rounded-[30px] border border-white/80 bg-white/80 p-7 shadow-[0_22px_56px_rgba(15,23,42,0.08)] transition duration-200 hover:-translate-y-1 hover:shadow-[0_28px_72px_rgba(15,23,42,0.12)];
-  }
-
-  .price-card--featured {
-    background: linear-gradient(180deg, rgba(39, 93, 244, 0.96) 0%, rgba(18, 26, 53, 0.96) 100%);
-    @apply border-transparent text-white shadow-[0_36px_88px_rgba(37,99,235,0.3)];
-  }
-
-  .cta-banner {
-    background: radial-gradient(circle at top right, rgba(71, 136, 255, 0.22), transparent 32%), linear-gradient(135deg, rgba(15, 23, 42, 0.98) 0%, rgba(24, 24, 27, 0.94) 100%);
-    @apply overflow-hidden rounded-[36px] border border-slate-900/80 p-8 text-white shadow-[0_36px_80px_rgba(15,23,42,0.2)] sm:p-10;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-raised);
+    @apply p-5;
   }
 
   .footer-link {
-    @apply text-sm font-semibold text-slate-500 transition duration-200 hover:text-slate-900;
+    color: var(--color-muted);
+    transition: color var(--duration-fast) var(--ease-standard);
+    @apply text-sm font-semibold hover:text-inherit;
   }
 }

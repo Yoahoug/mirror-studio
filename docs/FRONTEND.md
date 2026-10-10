@@ -30,12 +30,28 @@ npm run build     # = build:css → build:workspace → build:console → build:
   `static/css/main.css`，供 Go 渲染的 SSR 页面（`/login`、`/register` 等）引用。
 - `build:workspace` / `build:console`：Vite v6 + Tailwind v4（经
   `@tailwindcss/vite` 插件），产物文件名固定为 `assets/workspace.*` /
-  `assets/console.*`，保持与 1.x 相同的引用路径。
+  `assets/console.*`，保持与既有 Go 模板相同的引用路径契约。
 - `build:ssr`：说明性空操作。SSR 页面不是构建产物——模板内嵌在 Go 二进制里，
-  这里仅用于提示其 CSS 依赖 `build:css`。
+  其 CSS 依赖 `build:css`。
 
-SPA 的运行时渲染输出不得改动（重写的冻结约束），组件、文案与资源引用路径
-与 1.x 逐字节一致；合并包只动了构建管线，不动 UI 源码语义。
+> 0.0.2 重构解除旧有「SPA 运行时逐字节一致」约束，正式落地统一设计系统与双模式一致性。
+
+## 设计系统 (Design System)
+
+全站确立**「白底静奢极简」（Quiet Minimal Light）**设计语言，两套 SPA 与 SSR 页面统一从单一 Token 来源取值：
+
+1. **唯一 Token 来源**：`frontend/shared/design/tokens.css`。纯 CSS 变量定义中性色阶（`--color-bg`, `--color-surface`, `--color-ink`, `--color-border`）、唯一强调色（`--color-accent: #6d5dfc`）、语义色、标准圆角阶（`xs: 6px`, `sm: 8px`, `md: 12px`, `lg: 16px`, `xl: 22px`, `2xl: 28px`）与三级阴影（`raised`, `floating`, `overlay`）。
+2. **两套管线同源消费**：
+   - **SPA (Tailwind v4)**：各应用 `index.css` 通过 `@import "../../shared/design/tokens.css"` 引入并经 `@theme` 映射语义类名；通过 `@source "../../shared"` 保证共享层样式提取。
+   - **SSR (Tailwind v3)**：`tailwind.config.js` 与 `static_src/css/tailwind.css` 只引用同名 CSS 变量，模板内联覆盖样式已全部收敛至 `@layer components`。
+   - 改动一次 CSS 变量，SPA 与 Go SSR 页面即时同步生效。
+3. **字体规范**：消灭外部 Google Fonts 网络阻塞依赖。统一采用零外链的系统字体栈：
+   - 默认正文/标题：`-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif`
+   - 等宽代码：`ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace`
+4. **暗色模式 (Dark Mode)**：
+   - 支持 `[data-theme="dark"]`、`prefers-color-scheme` 系统跟随，持久化至 `localStorage("mirror.theme")`（`light` / `dark` / `system` 三态）。
+   - SSR 模板外壳通过 `data-theme` 属性无缝衔接。
+
 
 ## 运行时接线
 
