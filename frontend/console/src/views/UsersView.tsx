@@ -28,6 +28,9 @@ export function UsersView() {
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState('');
+  // 输入框草稿与真正参与查询的关键词分开：前者逐字更新，后者只在点「搜索」时生效，
+  // 否则每敲一个字都会发一次请求，提交时还会用旧关键词再补一次。
+  const [appliedKeyword, setAppliedKeyword] = useState('');
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +46,7 @@ export function UsersView() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchConsoleUsers({ page, per_page: 15, keyword, status });
+      const res = await fetchConsoleUsers({ page, per_page: 15, keyword: appliedKeyword, status });
       setUsers(res.items || []);
       setPagination(res.pagination || null);
     } catch (err: any) {
@@ -51,7 +54,7 @@ export function UsersView() {
     } finally {
       setLoading(false);
     }
-  }, [page, keyword, status, t]);
+  }, [page, appliedKeyword, status, t]);
 
   useEffect(() => {
     loadUsers();
@@ -107,8 +110,9 @@ export function UsersView() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            // 只改状态：页码与关键词一起提交，effect 里发一次请求就够。
             setPage(1);
-            loadUsers();
+            setAppliedKeyword(keyword.trim());
           }}
           className="flex flex-wrap items-center gap-3"
         >
