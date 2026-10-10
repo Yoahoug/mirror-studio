@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type Ref } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   AudioLines,
@@ -19,30 +19,40 @@ import {
   UserRound,
   Wand2,
   X,
+  Zap,
 } from "lucide-react";
 import {
   AuthRequiredError,
   cancelTtsTask,
   cancelUploadSession,
   createTtsTask,
+  fetchGpuStatus,
   fetchTtsStatus,
   fetchTtsTaskDetail,
   releaseTtsMemory,
+  startTtsEngine,
+  terminateGpuHolder,
   uploadFileResumable,
   type ChatModel,
+  type GpuLockHolder,
   type TtsOutput,
   type TtsStatus,
   type TtsTask,
   type TtsVoice,
   type UploadProgress,
 } from "../services/apiService";
+import GpuBusyDialog from "./GpuBusyDialog";
 import TtsSettingsModal from "./TtsSettingsModal";
+import type { AssistantFillPayload, AssistantWorkbenchState } from "@shared/types/assistant";
+import type { WorkbenchAssistantHandle } from "./GenerationWorkbench";
 
 // 「TTS 语音合成」板块：仅本地开发者模式（npm run local）出现，任务交给 E:\AI\TTS 的 CLI 契约执行。
 // 四种模式（音色设计 / 音色复用 / 声音克隆 / 预设音色）+ 音色库 + 引擎实例管理；
 // 页面骨架沿用 ComfyWorkbench（左栏表单 + 右侧结果区 + 轮询/恢复）。
 
 interface TtsWorkbenchProps {
+  /** React 19：ref 作为普通 prop，暴露悬浮窗助手的读写句柄。 */
+  ref?: Ref<WorkbenchAssistantHandle>;
   isAuthenticated: boolean;
   selectedModel: string;
   chatModels: ChatModel[];
@@ -154,6 +164,7 @@ function advancedDefaults(mode: TtsMode): Record<string, string | number | boole
 }
 
 export default function TtsWorkbench({
+  ref,
   isAuthenticated,
   onOpenAuth,
   addToast,
@@ -215,6 +226,11 @@ export default function TtsWorkbench({
   const [isRestoringTask, setIsRestoringTask] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isReleasing, setIsReleasing] = useState(false);
+  const [isPreloading, setIsPreloading] = useState(false);
+  // 显卡锁冲突：提交前发现别的任务在占显卡时弹窗，用户可等它完成或终止它。
+  const [gpuBusy, setGpuBusy] = useState<GpuLockHolder | null>(null);
+  const [isTerminatingGpu, setIsTerminatingGpu] = useState(false);
+  const skipGpuCheckRef = useRef(false);
   const [showResidentPrompt, setShowResidentPrompt] = useState(false);
   const completedTaskCountRef = useRef(0);
 
@@ -608,6 +624,61 @@ export default function TtsWorkbench({
     }
   };
 
+  /**
+   * 顶部「预加载」：把当前模式的引擎加载好并预热，随后第一次合成就是热态。
+   * 实测首次合成含约 16 秒首次推理开销（21s → 之后 5s），预热就是把它挪到这里。
+   */
+  const handlePreloadEngine = async () => {
+    const engine = engineForMode(mode, cloneEngine, presetEngine);
+    setIsPreloading(true);
+    try {
+      const result = await startTtsEngine({ engine });
+      const loadSeconds = result.slot?.load_s ? `加载 ${Math.round(result.slot.load_s)} 秒` : "";
+      const warmSeconds = result.warmup?.ok ? `预热 ${Math.round(result.warmup.seconds || 0)} 秒` : "";
+      const timing = [loadSeconds, warmSeconds].filter(Boolean).join("、");
+      if (result.warmup?.ok) {
+        addToast(
+          result.reused
+            ? `${engine} 已在运行且处于热态，可直接复用`
+            : `${engine} 已预加载${timing ? `（${timing}）` : ""}，接下来合成约 5 秒/次`,
+          "success",
+        );
+      } else {
+        addToast(`${engine} 已就绪${timing ? `（${timing}）` : ""}${result.warmup?.reason ? `；${result.warmup.reason}` : ""}`, "info");
+      }
+      await refreshTtsStatus();
+    } catch (error: any) {
+      addToast(error.message || "预加载失败", "error");
+    } finally {
+      setIsPreloading(false);
+    }
+  };
+
+  /**
+   * 锁冲突弹窗：终止占用者后重新走一遍提交（这次跳过锁预检）。
+   * 终止没成功（对方还在收尾）就保持弹窗，让用户再试或改为等待。
+   */
+  const handleTerminateGpuHolder = async () => {
+    setIsTerminatingGpu(true);
+    try {
+      const result = await terminateGpuHolder();
+      addToast(result.reason, result.terminated ? "success" : "info");
+      await refreshTtsStatus();
+      if (result.terminated) {
+        setGpuBusy(null);
+        skipGpuCheckRef.current = true;
+        await handleGenerate();
+      } else {
+        const holder = await fetchGpuStatus().catch(() => null);
+        setGpuBusy(holder);
+      }
+    } catch (error: any) {
+      addToast(error.message || "终止占用者失败", "error");
+    } finally {
+      setIsTerminatingGpu(false);
+    }
+  };
+
   /** 顶部「释放内存」：停掉 TTS 常驻实例（有任务在跑时后端会拒绝）。 */
   const handleReleaseMemory = async () => {
     if (isWorking) {
@@ -626,14 +697,19 @@ export default function TtsWorkbench({
     }
   };
 
-  /** 常驻弹窗的选择：立即重启当前引擎为常驻模式（idle_timeout=0），或保持现状。 */
+  /** 常驻弹窗的选择：把当前实例切成常驻（同引擎不重启，用后台保活顶住空闲超时），或保持现状。 */
   const handleKeepResident = async () => {
     setShowResidentPrompt(false);
     const engine = ttsStatus?.instance?.engine;
     if (!engine) return;
     try {
-      await (await import("../services/apiService")).startTtsEngine({ engine, force: true, keep_resident: true });
-      addToast(`已切换为常驻模式：${engine} 不会自动退出；用完记得「释放内存」`, "success");
+      const result = await startTtsEngine({ engine, keep_resident: true });
+      addToast(
+        result.reused
+          ? `已切换为常驻：${engine} 保留当前热态、不再自动退出；用完记得「释放内存」`
+          : `已切换为常驻：${engine} 不会自动退出；用完记得「释放内存」`,
+        "success",
+      );
       await refreshTtsStatus();
     } catch (error: any) {
       addToast(error.message || "切换常驻模式失败", "error");
@@ -701,6 +777,40 @@ export default function TtsWorkbench({
     return "";
   };
 
+  // 悬浮窗助手联动：按当前模式给上下文快照；回填按模式白名单择字段写入
+  // （design → instruct；preset → instruct=风格指令 + text；clone → ref_text + text；say → text）。
+  const modeLabel = MODE_TABS.find((item) => item.value === mode)?.label || mode;
+  useImperativeHandle(ref, () => ({
+    getAssistantState: () => ({
+      scene: "tts" as const,
+      mode,
+      snapshot: [
+        `合成模式：${modeLabel}`,
+        text.trim() ? `当前要合成的文本：${text.trim().slice(0, 400)}` : "要合成的文本：空",
+        instruct.trim() ? `当前音色描述/风格指令：${instruct.trim().slice(0, 300)}` : "",
+        mode === "clone" && refText.trim() ? `当前参考文本：${refText.trim().slice(0, 300)}` : "",
+        mode === "clone" ? (refUploadToken || refAudioName ? "参考音频：已上传" : "参考音频：未上传") : "",
+      ].filter(Boolean).join("\n"),
+    }),
+    applyAssistantFill: (fill) => {
+      const nextText = fill.text?.trim();
+      if (nextText) setText(nextText.slice(0, MAX_TEXT_LENGTH));
+      if (mode === "design" && fill.instruct?.trim()) setInstruct(fill.instruct.trim());
+      if (mode === "preset") {
+        const style = (fill.instruct || fill.style || "").trim();
+        if (style) setInstruct(style);
+      }
+      if (mode === "clone" && fill.ref_text?.trim()) setRefText(fill.ref_text.trim());
+    },
+    matchesAssistantFill: (fill) => {
+      if (fill.text?.trim() && text.trim() !== fill.text.trim()) return false;
+      const plannedInstruct = mode === "design" ? fill.instruct?.trim() : mode === "preset" ? (fill.instruct || fill.style || "").trim() : "";
+      if (plannedInstruct && instruct.trim() !== plannedInstruct) return false;
+      if (mode === "clone" && fill.ref_text?.trim() && refText.trim() !== fill.ref_text.trim()) return false;
+      return true;
+    },
+  }), [mode, modeLabel, text, instruct, refText, refUploadToken, refAudioName]);
+
   const submitTask = async (payload: Record<string, any>, sessionId: number) => {
     let task: TtsTask;
     try {
@@ -751,6 +861,16 @@ export default function TtsWorkbench({
       addToast("TTS CLI 不可用，请先检查 E:\\AI\\TTS 环境", "error");
       setShowSettings(true);
       return;
+    }
+    // 显卡被别的任务占着（ComfyUI 生图 / 其他 TTS）时先弹窗：等它完成，或终止它再提交。
+    if (skipGpuCheckRef.current) {
+      skipGpuCheckRef.current = false;
+    } else {
+      const holder = await fetchGpuStatus().catch(() => null);
+      if (holder) {
+        setGpuBusy(holder);
+        return;
+      }
     }
     const targetEngine = engineForMode(mode, cloneEngine, presetEngine);
     const currentEngine = status.instance?.engine || "";
@@ -824,6 +944,10 @@ export default function TtsWorkbench({
 
   const isWorking = isGenerating || runningStatuses.includes(taskStatus);
   const instanceEngine = ttsStatus?.instance?.engine || "";
+  /** 常驻 = 启动时 idle_timeout=0（永不退出）或本进程保活顶住空闲超时。 */
+  const residentInstance = Boolean(instanceEngine)
+    && (ttsStatus?.instance?.idle_timeout_s === 0 || Boolean(ttsStatus?.keep_alive?.enabled));
+  const targetEngine = engineForMode(mode, cloneEngine, presetEngine);
   const cloneEngineSpec = ttsStatus?.engines.find((engine) => engine.id === cloneEngine) || null;
   const cloneRunningEngineMatches = instanceEngine === cloneEngine;
   const activeVoice = (ttsStatus?.voices || []).find((item) => item.name === voice) || null;
@@ -1409,15 +1533,30 @@ export default function TtsWorkbench({
                 {outputs.length ? "结果已同步" : isWorking ? "TTS 合成中" : "实时预览"}
               </div>
               <div className="flex items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-xl border border-gray-100 bg-white px-3 py-2 text-xs font-bold text-gray-500">
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-gray-100 bg-white px-3 py-2 text-xs font-bold text-gray-500"
+                  title={ttsStatus?.keep_alive?.note || ""}
+                >
                   <span className={`h-2 w-2 rounded-full ${instanceEngine ? "bg-emerald-400" : "bg-gray-300"}`} />
-                  {instanceEngine ? `实例：${instanceEngine}${ttsStatus?.instance?.idle_timeout_s === 0 ? " · 常驻" : ""}` : "无运行实例（提交时自动拉起）"}
+                  {instanceEngine
+                    ? `实例：${instanceEngine}${residentInstance ? " · 常驻" : ""}`
+                    : `无运行实例（提交时自动拉起 ${targetEngine}）`}
                 </span>
                 {ttsStatus?.gpu && (
                   <span className="inline-flex items-center gap-1.5 rounded-xl border border-gray-100 bg-white px-3 py-2 text-xs font-bold text-gray-500">
                     显存 {ttsStatus.gpu.vram_used_mb}/{ttsStatus.gpu.vram_total_mb} MB
                   </span>
                 )}
+                <button
+                  type="button"
+                  onClick={() => void handlePreloadEngine()}
+                  disabled={isPreloading || isWorking || !ttsStatus?.enabled}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-gray-100 bg-white px-3 py-2 text-xs font-bold text-gray-500 transition hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={`加载并预热 ${targetEngine}：把 8~70 秒模型加载与约 16 秒首次推理挪到现在，随后每次合成约 5 秒`}
+                >
+                  {isPreloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                  {isPreloading ? "预加载中" : "预加载"}
+                </button>
                 <button
                   type="button"
                   onClick={() => void handleReleaseMemory()}
@@ -1459,7 +1598,11 @@ export default function TtsWorkbench({
                           <div className="flex items-center gap-2 text-[11px] text-gray-400">
                             {output.sr ? <span className="rounded-full bg-gray-50 px-2 py-0.5 font-bold">{output.sr} Hz</span> : null}
                             {output.duration_s ? <span className="rounded-full bg-gray-50 px-2 py-0.5 font-bold">{formatSeconds(output.duration_s)}</span> : null}
-                            <a href={output.download_url} className="inline-flex items-center gap-1 rounded-xl border border-gray-100 bg-white px-3 py-1.5 font-bold text-gray-600 transition hover:border-gray-200 hover:text-black">
+                            <a
+                              href={output.download_url}
+                              download={output.name || undefined}
+                              className="inline-flex items-center gap-1 rounded-xl border border-gray-100 bg-white px-3 py-1.5 font-bold text-gray-600 transition hover:border-gray-200 hover:text-black"
+                            >
                               <Download className="h-3 w-3" />
                               下载
                             </a>
@@ -1596,6 +1739,19 @@ export default function TtsWorkbench({
         )}
       </AnimatePresence>
 
+      {/* 显卡锁冲突：等对方完成，或终止对方再提交 */}
+      <AnimatePresence>
+        {gpuBusy && (
+          <GpuBusyDialog
+            holder={gpuBusy}
+            taskLabel="TTS 合成"
+            terminating={isTerminatingGpu}
+            onCancel={() => setGpuBusy(null)}
+            onTerminate={() => void handleTerminateGpuHolder()}
+          />
+        )}
+      </AnimatePresence>
+
       {/* 槽位切换确认 */}
       <AnimatePresence>
         {confirmSwitch && (
@@ -1664,8 +1820,9 @@ export default function TtsWorkbench({
                   <p className="mt-1.5 text-[12px] leading-5 text-gray-500">
                     你已经连续合成了 {completedTaskCountRef.current} 次。当前实例空闲
                     {" "}
-                    {ttsStatus?.instance?.idle_timeout_s ?? 600} 秒后会自动退出，下次合成要重新等 8~70 秒加载。
-                    切到常驻模式可以立即续用（不重新加载），但显存会一直被占用——用完记得点「释放内存」。
+                    {ttsStatus?.instance?.idle_timeout_s ?? 600} 秒后会自动退出，下次合成要重新等 8~70 秒加载 + 约 16 秒首次推理。
+                    切到常驻不会重启引擎、就绪的热态直接留用（随后每次合成约 5 秒），
+                    但显存会一直被占用——用完记得点「释放内存」。
                   </p>
                 </div>
               </div>

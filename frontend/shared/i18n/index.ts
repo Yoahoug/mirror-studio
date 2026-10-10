@@ -59,6 +59,7 @@ export const dictionary = {
       nav: {
         studio: "创作工坊",
         history: "画廊与历史",
+        assets: "资产",
         create: "开始创作",
         console: "管理控制台",
         settings: "偏好设置",
@@ -397,6 +398,7 @@ export const dictionary = {
       nav: {
         studio: "Creative Studio",
         history: "Gallery & History",
+        assets: "Assets",
         create: "Create",
         console: "Console",
         settings: "Settings",

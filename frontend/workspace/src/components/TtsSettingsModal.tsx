@@ -131,14 +131,18 @@ export default function TtsSettingsModal({ onClose, addToast, onStatusChange }: 
 
   const handleStart = async () => {
     setIsStarting(true);
-    setNotice(`正在启动 ${startEngine}（首次加载约 8~70 秒）…`);
+    setNotice(`正在启动 ${startEngine}（首次加载约 8~70 秒，随后自动预热）…`);
     try {
-      await startTtsEngine({ engine: startEngine, keep_resident: keepResident });
-      setNotice(
-        keepResident
-          ? `启动命令已执行；${startEngine} 将常驻显存（不会自动退出），用完后记得点「释放内存」。`
-          : `启动命令已执行；${startEngine} 加载完成后即可合成，空闲 ${status?.config.idle_timeout_seconds ?? 600} 秒自动释放。`,
-      );
+      const result = await startTtsEngine({ engine: startEngine, keep_resident: keepResident });
+      const reuseLine = result.reused ? `${startEngine} 已在运行，本次直接复用（没有重新加载）。` : "";
+      const loadLine = !result.reused && result.slot?.load_s ? `加载耗时 ${Math.round(result.slot.load_s)} 秒。` : "";
+      const warmLine = result.warmup?.ok
+        ? `已预热（${Math.round(result.warmup.seconds || 0)} 秒），随后每次合成约 5 秒。`
+        : `未预热：${result.warmup?.reason || "无预热条件"}。首次合成本身会慢约 16 秒，之后恢复。`;
+      const residentLine = keepResident
+        ? `${startEngine} 将常驻显存（保活刷新空闲超时），用完后记得点「释放内存」。`
+        : `空闲 ${status?.config.idle_timeout_seconds ?? 600} 秒后自动释放（期间合成直接复用热态）。`;
+      setNotice(`${reuseLine}${loadLine}${warmLine} ${residentLine}`);
       await refreshStatus();
     } catch (error: any) {
       setNotice("");
@@ -161,6 +165,27 @@ export default function TtsSettingsModal({ onClose, addToast, onStatusChange }: 
     }
   };
 
+  /** 实例已在跑时转常驻：不重启引擎（不重付加载），后端用保活顶住空闲超时。 */
+  const handleKeepResidentRunning = async () => {
+    const engine = status?.instance?.engine || "";
+    if (!engine) return;
+    setIsStarting(true);
+    try {
+      const result = await startTtsEngine({ engine, keep_resident: true });
+      setNotice(
+        result.reused
+          ? `${engine} 已切为常驻：没有重启引擎，热态保留；用完记得「释放内存」。`
+          : `${engine} 已切为常驻（注意：本次重新加载了引擎）；用完记得「释放内存」。`,
+      );
+      await refreshStatus();
+    } catch (error: any) {
+      setNotice("");
+      addToast(error?.message || "切换常驻失败", "error");
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
   const handleRelease = async () => {
     setIsReleasing(true);
     try {
@@ -176,6 +201,9 @@ export default function TtsSettingsModal({ onClose, addToast, onStatusChange }: 
 
   const running = Boolean(status?.instance);
   const instanceEngine = status?.instance?.engine || "";
+  /** 常驻 = 启动时未设空闲超时，或后端保活正在刷新空闲计时。 */
+  const residentRunning = running
+    && (status?.instance?.idle_timeout_s === 0 || Boolean(status?.keep_alive?.enabled));
   const gpu = status?.gpu;
   const vramFreeMb = gpu ? Math.max(0, gpu.vram_total_mb - gpu.vram_used_mb) : 0;
 
@@ -308,7 +336,7 @@ export default function TtsSettingsModal({ onClose, addToast, onStatusChange }: 
               )}
             </div>
 
-            {/* 常驻内存开关：启动时生效；运行中的实例要改行为请先停止再启动。 */}
+            {/* 常驻内存开关：启动时生效；实例已在跑时由后端保活顶住空闲超时（不重启、不丢热态）。 */}
             {!running && (
               <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-2xl border border-gray-100 bg-gray-50/70 px-3.5 py-3">
                 <input
@@ -324,11 +352,26 @@ export default function TtsSettingsModal({ onClose, addToast, onStatusChange }: 
                 </span>
               </label>
             )}
-            {running && status?.instance && !status.instance.idle_timeout_s && (
+            {running && status?.instance && residentRunning && (
               <div className="mt-3 flex items-start gap-2 rounded-2xl border border-indigo-100 bg-indigo-50 px-3.5 py-2.5 text-[11px] leading-5 text-indigo-700">
                 <Timer className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <span>当前实例是常驻模式（不会自动退出）；连续任务打完后记得「停止实例」或「释放内存」。</span>
+                <span>
+                  当前实例是常驻模式（{status.instance.idle_timeout_s === 0 ? "启动时未设空闲超时" : `保活每 ${status.keep_alive?.interval_s || 0} 秒刷新一次空闲计时`}）；
+                  连续任务打完后记得「停止实例」或「释放内存」。
+                </span>
               </div>
+            )}
+            {running && status?.instance && !residentRunning && (
+              <button
+                type="button"
+                onClick={() => void handleKeepResidentRunning()}
+                disabled={isStarting}
+                className="mt-3 flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border border-gray-200 bg-white text-[12px] font-black text-gray-700 transition hover:border-gray-300 hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                title="不重启引擎，改成后台保活顶住空闲超时（保留已加载、已预热的热态）"
+              >
+                {isStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Timer className="h-4 w-4" />}
+                转为常驻（不重启引擎）
+              </button>
             )}
 
             {/* 释放内存：TTS 侧 = 停掉常驻实例；有任务在跑时后端会拒绝。 */}

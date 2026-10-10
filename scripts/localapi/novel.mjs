@@ -5,6 +5,8 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 import {NOVEL_DIR, NOVELVIZ_IMAGE_CONCURRENCY, NOVELVIZ_MAX_SCENES} from './config.mjs';
+import {acquireGpu, gpuLockHolder} from './gpu.mjs';
+import {comfyStatus, generateWithComfy} from './comfy.mjs';
 import {generateImage, planScenes} from './provider.mjs';
 import {downloadURL, nextId, nowIso, persist, saveMedia, store} from './store.mjs';
 
@@ -531,8 +533,36 @@ async function generateSceneImage(taskId, image) {
       `Story meaning: ${image.story_significance}`,
       `Visual description: ${image.visual_prompt}`,
     ].join('\n');
-    const result = await generateImage({prompt, sizeCode: '1024x1024', qualityCode: 'high'});
-    task.channel_name = result.source === 'provider' ? '真实渠道' : '本地占位生图';
+
+    // 生图通路：本机 ComfyUI 在跑就优先走 Comfy（真实出图），否则退回占位图/真实渠道。
+    // 与生图/TTS 任务共用 GPU 互斥锁，避免同一块显存被两边同时抢。
+    let result;
+    let engineNote = '';
+    const comfy = await comfyStatus().catch(() => null);
+    if (comfy?.running) {
+      const releaseGpu = acquireGpu('comfy', `小说绘卷场景 ${image.scene_number}`, `novelviz:${taskId}`);
+      if (!releaseGpu) {
+        throw new Error(`显卡正被${gpuLockHolder()?.owner === 'tts' ? ' TTS 语音合成' : '其他生图任务'}占用（${gpuLockHolder()?.label || ''}），本场景稍后可重试`);
+      }
+      try {
+        const defaultModel = comfy.models?.[0]?.id || 'sixstep';
+        const comfyResult = await generateWithComfy({
+          prompt,
+          sizeCode: '1024x1024',
+          model: defaultModel,
+          onProgress: null,
+        });
+        result = {buffer: comfyResult.buffer, mimeType: comfyResult.mimeType, source: 'comfy'};
+        engineNote = `ComfyUI · ${comfy.models?.[0]?.label || defaultModel}`;
+      } finally {
+        releaseGpu();
+      }
+    } else {
+      const fallback = await generateImage({prompt, sizeCode: '1024x1024', qualityCode: 'high'});
+      result = fallback;
+      engineNote = fallback.source === 'provider' ? '真实渠道' : '本地占位生图';
+    }
+    task.channel_name = engineNote;
     const token = saveMedia(result.buffer, {
       mimeType: result.mimeType,
       name: `novel-${taskId}-scene-${image.scene_number}`,

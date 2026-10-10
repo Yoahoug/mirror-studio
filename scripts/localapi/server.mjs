@@ -23,7 +23,7 @@ import {
 import * as gpuApi from './gpu.mjs';
 import * as novelApi from './novel.mjs';
 import * as ttsApi from './tts.mjs';
-import {downloadURL, localUser, mediaByToken, persist, quotaView, store} from './store.mjs';
+import {downloadURL, localUser, mediaByToken, mediaDownloadName, persist, quotaView, store} from './store.mjs';
 import * as taskApi from './tasks.mjs';
 import * as uploadApi from './uploads.mjs';
 
@@ -285,10 +285,14 @@ route('POST', '/api/chat', async (req, res) => {
 });
 
 // 流式对话（悬浮窗对话用）：上游 SSE 原样透传，思考过程在 delta.reasoning_content。
+// context（scene/mode/snapshot）由前端按当前板块传入，服务端拼场景化 system；图片消息原样透传。
 route('POST', '/api/chat/stream', async (req, res) => {
   const payload = await readJSON(req);
   const config = chatApi.resolveChatConfig();
-  const messages = chatApi.buildChatMessages(payload.messages, config.custom_instruction);
+  const messages = chatApi.buildStreamMessages(payload.messages, {
+    context: payload.context,
+    customInstruction: config.custom_instruction,
+  });
   const controller = new AbortController();
   req.on('close', () => controller.abort());
   const upstream = await chatApi.openChatStream({messages, signal: controller.signal});
@@ -375,7 +379,14 @@ route('GET', '/api/tts/status', async (_req, res) => ok(res, await ttsApi.ttsSta
 
 route('POST', '/api/tts/start', async (req, res) => {
   const payload = await readJSON(req);
-  return ok(res, await ttsApi.startTtsEngine({...payload, keepResident: payload.keep_resident === true}));
+  // 显式启动 = 预加载意图：默认「加载 + 预热 + 按需常驻」，让随后的第一次合成就是热态。
+  return ok(res, await ttsApi.startTtsEngine({
+    engine: payload.engine,
+    force: payload.force === true,
+    switch: payload.switch === true,
+    keepResident: payload.keep_resident === true,
+    warmup: payload.warmup !== false,
+  }));
 });
 
 route('POST', '/api/tts/stop', async (_req, res) => ok(res, await ttsApi.stopTts()));
@@ -386,6 +397,53 @@ route('POST', '/api/tts/release', async (_req, res) => ok(res, await ttsApi.rele
 route('POST', '/api/comfy/release', async (_req, res) => ok(res, await comfyApi.releaseComfyMemory()));
 
 route('GET', '/api/gpu/status', async (_req, res) => ok(res, gpuApi.describeGpuLock()));
+
+/**
+ * 终止当前占用显卡的任务：工作台在锁冲突弹窗里点「终止对方并继续」时调用。
+ * TTS 占用 → 取消任务（杀掉 CLI 子进程）并停实例：契约没有中断合成的接口，
+ * 只有停掉 worker 进程才能真正停下这次推理、把显存腾出来；
+ * ComfyUI 占用 → 取消任务（从队列删除 + /interrupt），轮询侧会立刻收尾并释放锁。
+ * 返回前最多等 10 秒锁释放；terminated=true 表示现在可以安全提交。
+ */
+async function terminateGpuHolder() {
+  const holder = gpuApi.describeGpuLock();
+  if (!holder) {
+    return {terminated: true, holder: null, action: '空闲', waited_ms: 0, reason: '显卡已经空闲，可以直接提交。'};
+  }
+  let action = '';
+  if (holder.owner === 'tts') {
+    if (holder.ref) {
+      ttsApi.cancelTtsTask(holder.ref);
+      action = `已取消 TTS 任务 ${holder.ref}`;
+    } else {
+      action = '已终止 TTS 预加载/预热';
+    }
+    const stopped = await ttsApi.stopTts().catch(() => ({stopped: false}));
+    if (stopped.stopped) action += '，并已停止 TTS 实例释放显存';
+  } else if (holder.ref) {
+    taskApi.cancelTask(holder.ref);
+    action = `已取消生图任务 ${holder.ref}（ComfyUI 队列已删除并打断执行）`;
+  } else {
+    await comfyApi.interruptComfy().catch(() => {});
+    action = '已请求打断 ComfyUI 当前执行';
+  }
+  const startedAt = Date.now();
+  while (gpuApi.describeGpuLock() && Date.now() - startedAt < 10000) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  const stillHeld = gpuApi.describeGpuLock();
+  return {
+    terminated: !stillHeld,
+    holder,
+    action,
+    waited_ms: Date.now() - startedAt,
+    reason: stillHeld
+      ? `${action}，但显卡还被占着（对方正在收尾），稍等几秒再提交。`
+      : `${action}，显卡已空闲，可以提交了。`,
+  };
+}
+
+route('POST', '/api/gpu/terminate', async (_req, res) => ok(res, await terminateGpuHolder()));
 
 route('GET', '/api/tts/log', async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -500,12 +558,15 @@ async function serveDownload(req, res, params) {
   const media = mediaByToken(params.token);
   if (!media || !fs.existsSync(media.file)) return fail(res, 404, '文件不存在或已过期', 404);
   const url = new URL(req.url, 'http://localhost');
-  const inline = url.searchParams.get('preview') === '1' || url.searchParams.get('disposition') !== 'attachment';
+  // 默认 inline（试听/预览）；带 download=1（本地 downloadURL 生成的形状）或
+  // disposition=attachment（线上形状）时按附件下发，浏览器直接落盘而不是开播放器页。
+  const attachment = url.searchParams.get('download') === '1' || url.searchParams.get('disposition') === 'attachment';
+  const filename = mediaDownloadName(media);
   const buffer = fs.readFileSync(media.file);
   res.writeHead(200, {
     'Content-Type': media.mime_type,
     'Content-Length': buffer.length,
-    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(media.name)}"`,
+    'Content-Disposition': `${attachment ? 'attachment' : 'inline'}; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
   });

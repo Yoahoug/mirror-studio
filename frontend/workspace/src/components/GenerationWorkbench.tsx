@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type Ref } from "react";
 import { motion } from "motion/react";
 import {
   AlertTriangle,
@@ -16,18 +16,26 @@ import {
 import {
   AuthRequiredError,
   cancelUploadSession,
-  chatWithAI,
   createGenerationTask,
+  expandPromptWithAI,
   fetchImageDownloadUrl,
   fetchTaskDetail,
   uploadFileResumable,
   type ChatModel,
+  type GenerationPayload,
   type GenerationTask,
   type ReferenceUploadResult,
   type UploadProgress,
 } from "../services/apiService";
+import type { AssistantFillPayload, AssistantWorkbenchHandle, AssistantWorkbenchState } from "@shared/types/assistant";
+import { StackGallery } from "@shared/ui";
+
+/** 悬浮窗助手通过 ref 调用：读当前输入快照 / 回填结构化字段 / 动态判定「已入框」。 */
+export type WorkbenchAssistantHandle = AssistantWorkbenchHandle;
 
 interface GenerationWorkbenchProps {
+  /** React 19：ref 作为普通 prop，暴露悬浮窗助手的读写句柄。 */
+  ref?: Ref<WorkbenchAssistantHandle>;
   isAuthenticated: boolean;
   selectedModel: string;
   chatModels: ChatModel[];
@@ -47,8 +55,6 @@ const ratioPresets = [
   { label: "3:2", width: 3, height: 2 },
   { label: "16:9", width: 16, height: 9 },
   { label: "9:16", width: 9, height: 16 },
-  { label: "2:3", width: 2, height: 3 },
-  { label: "3:4", width: 3, height: 4 },
 ];
 
 const resolutionOptions = [
@@ -76,6 +82,8 @@ const terminalStatuses = ["succeeded", "failed", "canceled"];
 const EXAMPLE_PROMPT = "一只布偶猫在茶杯旁睡觉，温暖的晨光穿过纱帘，木地板反光，写实风格，浅景深";
 const MAX_REFERENCE_SOURCE_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024;
+// 主参考图之外最多追加 3 张（共 4 张）；本地 Comfy 工作流实际支持到 16 张，这里按 UI 密度收敛。
+const MAX_EXTRA_REFERENCES = 3;
 const TARGET_REFERENCE_IMAGE_BYTES = 1.5 * 1024 * 1024;
 const MAX_REFERENCE_IMAGE_DIMENSION = 1600;
 const REFERENCE_IMAGE_JPEG_QUALITIES = [0.86, 0.8, 0.74, 0.68];
@@ -345,6 +353,7 @@ function isTaskStillActive(detail: GenerationTask): boolean {
 }
 
 export default function GenerationWorkbench({
+  ref,
   isAuthenticated,
   selectedModel,
   chatModels,
@@ -357,6 +366,7 @@ export default function GenerationWorkbench({
   onGenerationSubmitted,
 }: GenerationWorkbenchProps) {
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
+  const extraReferenceInputRef = useRef<HTMLInputElement | null>(null);
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [ratio, setRatio] = useState<RatioValue>({ width: 16, height: 9 });
@@ -365,17 +375,24 @@ export default function GenerationWorkbench({
   const [resolutionCode, setResolutionCode] = useState<ResolutionCode>("1k");
   const [qualityCode, setQualityCode] = useState<QualityCode>("auto");
   const [styleCode, setStyleCode] = useState("photography");
+  // 本轮要串行生成的张数（悬浮窗助手的参数计划可写 1~4；按钮区可手动加减）。
+  const [batchCount, setBatchCount] = useState(1);
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text_to_image");
   const [referenceImageDataUrl, setReferenceImageDataUrl] = useState("");
   const [referenceImageName, setReferenceImageName] = useState("");
   const [referenceUploadToken, setReferenceUploadToken] = useState("");
   const [referenceUploadFile, setReferenceUploadFile] = useState<File | null>(null);
   const [referenceUploadProgress, setReferenceUploadProgress] = useState<UploadProgress | null>(null);
+  // 追加参考图（第 2~4 张）：每项带独立上传进度；提交时与主参考图一起走 reference_upload_tokens。
+  const [extraReferences, setExtraReferences] = useState<Array<{ dataUrl: string; name: string; file: File; token: string; progress: number | null }>>([]);
   const [helperDraft, setHelperDraft] = useState("");
   const [taskNo, setTaskNo] = useState("");
   const [taskStatus, setTaskStatus] = useState("");
   const [progress, setProgress] = useState(0);
   const [previewUrl, setPreviewUrl] = useState("");
+  // 本次会话累积的成图（多格串行 / 历史恢复）：堆叠重放画廊的数据源。
+  const [galleryImages, setGalleryImages] = useState<Array<{ key: number; src: string }>>([]);
+  const [galleryIndex, setGalleryIndex] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState("");
   const [isPlaceholderResult, setIsPlaceholderResult] = useState(false);
   const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
@@ -581,6 +598,8 @@ export default function GenerationWorkbench({
     setTaskStatus("");
     setProgress(0);
     setPreviewUrl("");
+    setGalleryImages([]);
+    setGalleryIndex(0);
     setDownloadUrl("");
     setPreviewSize(null);
     setIsGenerating(false);
@@ -652,6 +671,14 @@ export default function GenerationWorkbench({
       setDownloadUrl(resolvedDownload || resolvedPreview);
       hasRenderablePreview = Boolean(resolvedPreview);
       setProgress(100);
+      // 堆叠重放：成图按时间顺序追加（同 key 去重，轮询重复回调不会堆出重影）。
+      if (resolvedPreview) {
+        setGalleryImages((current) => {
+          if (current.some((item) => item.src === resolvedPreview)) return current;
+          return [...current, { key: firstImage.id, src: resolvedPreview }];
+        });
+        setGalleryIndex((current) => current + 1);
+      }
       if (hasRenderablePreview && completionToastTaskRef.current !== detail.task_no) {
         completionToastTaskRef.current = detail.task_no;
         addToast("图片已生成");
@@ -677,6 +704,7 @@ export default function GenerationWorkbench({
     setReferenceUploadToken("");
     setReferenceUploadFile(null);
     setReferenceUploadProgress(null);
+    setExtraReferences([]);
     if (referenceInputRef.current) {
       referenceInputRef.current.value = "";
     }
@@ -908,6 +936,34 @@ export default function GenerationWorkbench({
     void loadReferenceImageFile(file);
   };
 
+  /** 追加参考图（图生图多图：固定主体 + 场景图等）；提交时统一上传。 */
+  const handleExtraReferenceChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    const room = MAX_EXTRA_REFERENCES - extraReferences.length;
+    if (files.length > room) addToast(`最多 ${MAX_EXTRA_REFERENCES} 张参考图，多出的已忽略`, "info");
+    for (const file of files.slice(0, room)) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > MAX_REFERENCE_SOURCE_IMAGE_BYTES) {
+        addToast(`${file.name} 超过 24MB，已跳过`, "error");
+        continue;
+      }
+      try {
+        const optimized = await optimizeReferenceImageFile(file);
+        setExtraReferences((current) => [
+          ...current,
+          { dataUrl: optimized.dataUrl, name: optimized.fileName || file.name, file: optimized.file, token: "", progress: null },
+        ]);
+      } catch (error: any) {
+        addToast(error.message || `${file.name} 处理失败`, "error");
+      }
+    }
+  };
+
+  const removeExtraReference = (index: number) => {
+    setExtraReferences((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  };
+
   const handlePresetRatioSelect = (nextRatio: RatioValue) => {
     const normalized = normalizeRatio(nextRatio.width, nextRatio.height);
     setRatio(normalized);
@@ -942,6 +998,17 @@ export default function GenerationWorkbench({
       addToast("请先上传参考图", "info");
       return;
     }
+    // 多格对比：本地渠道串行执行，逐张提交并等完成后再下一张（batchCount 来自助手的参数计划或按钮区）。
+    const total = Math.max(1, Math.min(4, Math.round(batchCount)));
+    for (let index = 0; index < total; index += 1) {
+      if (index > 0) {
+        addToast(`开始生成第 ${index + 1}/${total} 张`);
+      }
+      await runSingleGeneration();
+    }
+  };
+
+  const runSingleGeneration = async () => {
     const resolvedSizeCode = sizeCodeFromRatio(ratio, resolutionCode);
     const sessionId = beginTaskSession();
     stopPolling();
@@ -954,6 +1021,7 @@ export default function GenerationWorkbench({
     setIsRestoringTask(false);
     setTaskNo("");
     setPreviewUrl("");
+    setGalleryIndex(0);
     setDownloadUrl("");
     setPreviewSize(null);
     setTaskStatus("queued");
@@ -963,7 +1031,7 @@ export default function GenerationWorkbench({
     const currentReferenceUploadFile = referenceUploadFile;
     let resolvedReferenceUploadToken = referenceUploadToken;
     let resolvedReferenceImageName = referenceImageName;
-    const submissionPayload = {
+    const submissionPayload: GenerationPayload = {
       prompt,
       negative_prompt: negativePrompt,
       style_code: styleCode,
@@ -993,8 +1061,36 @@ export default function GenerationWorkbench({
         submissionPayload.reference_upload_token = resolvedReferenceUploadToken;
         submissionPayload.reference_image_name = resolvedReferenceImageName;
       };
+      /** 追加参考图：有 token 直接用，没有的当场上传。 */
+      const uploadExtraReferences = async () => {
+        if (!extraReferences.length) return [];
+        const tokens: string[] = [];
+        for (let index = 0; index < extraReferences.length; index += 1) {
+          const item = extraReferences[index];
+          if (item.token) {
+            tokens.push(item.token);
+            continue;
+          }
+          setExtraReferences((current) => current.map((entry, entryIndex) => (entryIndex === index ? { ...entry, progress: 5 } : entry)));
+          const { result: uploadResult } = await uploadFileResumable("generation_reference_image", item.file, {
+            onProgress: (uploadProgress) => {
+              setExtraReferences((current) => current.map((entry, entryIndex) => (entryIndex === index ? { ...entry, progress: uploadProgress.percent } : entry)));
+            },
+          });
+          if (!uploadResult?.reference_upload_token) throw new Error("追加参考图上传失败，请重试");
+          setExtraReferences((current) => current.map((entry, entryIndex) => (entryIndex === index ? { ...entry, token: uploadResult.reference_upload_token, progress: null } : entry)));
+          tokens.push(uploadResult.reference_upload_token);
+        }
+        return tokens;
+      };
       if (generationMode === "image_to_image" && currentReferenceUploadFile) {
         await syncReferenceUploadForSubmission();
+      }
+      if (generationMode === "image_to_image" && extraReferences.length) {
+        const extraTokens = await uploadExtraReferences();
+        if (isCurrentTaskSession(sessionId)) {
+          submissionPayload.reference_upload_tokens = [resolvedReferenceUploadToken, ...extraTokens].filter(Boolean);
+        }
       }
       for (let attempt = 1; attempt <= SUBMIT_RETRY_MAX_ATTEMPTS; attempt += 1) {
         try {
@@ -1071,11 +1167,7 @@ export default function GenerationWorkbench({
     }
     setIsHelping(true);
     try {
-      const reply = await chatWithAI(
-        `请把下面这段内容优化成适合文生图模型的中文创作描述，只返回优化后的描述，不要解释：\n${prompt}`,
-        [],
-        selectedModel,
-      );
+      const reply = await expandPromptWithAI(prompt, selectedModel);
       setHelperDraft(reply.trim());
     } catch (error: any) {
       addToast(error.message || "LLM 提示词优化失败", "error");
@@ -1083,6 +1175,58 @@ export default function GenerationWorkbench({
       setIsHelping(false);
     }
   };
+
+  // 悬浮窗助手联动：读当前输入做上下文快照；结构化回填把整份参数计划写入表单
+  // （提示词/负面/比例/分辨率/风格；batch_count 由调用方在生成侧消化，这里只负责入框）。
+  useImperativeHandle(ref, () => ({
+    getAssistantState: () => ({
+      scene: "image" as const,
+      generation_mode: generationMode,
+      snapshot: [
+        `模式：${generationMode === "image_to_image" ? "图生图（参考图已上传）" : "文生图"}`,
+        prompt.trim() ? `当前创作描述：${prompt.trim().slice(0, 600)}` : "创作描述：空",
+        negativePrompt.trim() ? `当前负面描述：${negativePrompt.trim().slice(0, 300)}` : "",
+        `当前画面参数：比例 ${formatRatioLabel(ratio)} · 分辨率 ${resolutionCode} · 风格 ${styles.find((item) => item.value === styleCode)?.label || styleCode}`,
+      ].filter(Boolean).join("\n"),
+    }),
+    applyAssistantFill: (fill) => {
+      if (fill.prompt?.trim()) setPrompt(fill.prompt.trim());
+      if (fill.negative_prompt?.trim()) setNegativePrompt(fill.negative_prompt.trim());
+      if (fill.ratio?.trim()) {
+        const match = /^(\d{1,2})\s*[:：]\s*(\d{1,2})$/.exec(fill.ratio.trim());
+        if (match) {
+          const width = Number(match[1]);
+          const height = Number(match[2]);
+          if (width > 0 && height > 0) handlePresetRatioSelect({ width, height });
+        }
+      }
+      if (fill.resolution === "1k" || fill.resolution === "2k") setResolutionCode(fill.resolution);
+      if (fill.style_code && styles.some((item) => item.value === fill.style_code)) setStyleCode(fill.style_code);
+      if (typeof fill.batch_count === "number" && Number.isFinite(fill.batch_count)) {
+        setBatchCount(Math.max(1, Math.min(4, Math.round(fill.batch_count))));
+      }
+    },
+    matchesAssistantFill: (fill) => {
+      // 动态「已入框」：逐字段比对当前表单与计划；任一计划字段被用户改过即视为不再一致。
+      if (fill.prompt?.trim() && prompt.trim() !== fill.prompt.trim()) return false;
+      if (fill.negative_prompt?.trim() && negativePrompt.trim() !== fill.negative_prompt.trim()) return false;
+      if (fill.ratio?.trim()) {
+        const match = /^(\d{1,2})\s*[:：]\s*(\d{1,2})$/.exec(fill.ratio.trim());
+        if (match) {
+          const width = Number(match[1]);
+          const height = Number(match[2]);
+          if (width > 0 && height > 0) {
+            const normalized = normalizeRatio(width, height);
+            if (ratio.width !== normalized.width || ratio.height !== normalized.height) return false;
+          }
+        }
+      }
+      if ((fill.resolution === "1k" || fill.resolution === "2k") && resolutionCode !== fill.resolution) return false;
+      if (fill.style_code && styles.some((item) => item.value === fill.style_code) && styleCode !== fill.style_code) return false;
+      if (typeof fill.batch_count === "number" && Number.isFinite(fill.batch_count) && batchCount !== Math.max(1, Math.min(4, Math.round(fill.batch_count)))) return false;
+      return true;
+    },
+  }), [prompt, negativePrompt, generationMode, ratio, resolutionCode, styleCode, batchCount]);
 
   const sizeCode = sizeCodeFromRatio(ratio, resolutionCode);
   const activeRatioLabel = formatRatioLabel(ratio);
@@ -1094,13 +1238,10 @@ export default function GenerationWorkbench({
   const isWorking = isGenerating || ((runningStatuses.includes(taskStatus) || isSyncingResult) && !previewUrl);
   const isPreparingReference = generationMode === "image_to_image" && isUploadingReference && !isWorking;
   const frameAspectRatio = previewSize ? previewSize.width / previewSize.height : getAspectRatioFromSizeCode(sizeCode);
-  const frameStyle = { aspectRatio: String(Math.max(frameAspectRatio, 0.2)) };
-  const frameMaxWidthClass =
-    frameAspectRatio < 0.9
-      ? "max-w-[320px] sm:max-w-[420px]"
-      : frameAspectRatio < 1.1
-        ? "max-w-[560px] sm:max-w-[620px]"
-        : "max-w-4xl";
+  // 竖向比例的正确打开方式：容器宽度由「可用高度 × 比例」反推（width:auto + aspect-ratio + max-h），
+  // 不能锁 w-full 再靠 max-h 截断——那会把 9:16 压成近方形（宽度被父容器撑满、高度被 62vh 顶住）。
+  // 用 62vh 估可用高，乘以比例得容器宽上限；横向走原有 max-w 逻辑。
+  const portraitFrameMaxWidth = `min(100%, calc(62vh * ${frameAspectRatio}))`;
   const hasReferenceImage = Boolean(referenceImageDataUrl || referenceImageName);
   const referenceUploadPercent = referenceUploadProgress?.percent ?? 0;
 
@@ -1170,6 +1311,14 @@ export default function GenerationWorkbench({
                   onChange={handleReferenceImageChange}
                   className="hidden"
                 />
+                <input
+                  ref={extraReferenceInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  multiple
+                  onChange={(event) => void handleExtraReferenceChange(event)}
+                  className="hidden"
+                />
                 {hasReferenceImage ? (
                   <div className="rounded-[1.4rem] border border-gray-100 bg-gray-50/80 p-3">
                     <div className="flex items-center gap-3">
@@ -1201,6 +1350,52 @@ export default function GenerationWorkbench({
                         </div>
                       </div>
                     </div>
+                    {extraReferences.length > 0 && (
+                      <div className="mt-3 border-t border-gray-100 pt-3">
+                        <div className="mb-2 text-[10px] font-black uppercase tracking-wider text-gray-400">
+                          追加参考图（{extraReferences.length}/{MAX_EXTRA_REFERENCES}）· 图1 为主图
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {extraReferences.map((item, index) => (
+                            <div key={`${item.name}-${index}`} className="group relative">
+                              <img src={item.dataUrl} alt={item.name} className="h-16 w-16 rounded-xl object-cover shadow-sm" />
+                              {item.progress !== null && (
+                                <div className="absolute inset-x-1 bottom-1 h-1 overflow-hidden rounded-full bg-black/30">
+                                  <div className="h-full rounded-full bg-white transition-all" style={{ width: `${Math.max(item.progress, 6)}%` }} />
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => removeExtraReference(index)}
+                                className="absolute -right-1.5 -top-1.5 hidden h-5 w-5 cursor-pointer place-items-center rounded-full bg-black text-white shadow group-hover:grid"
+                                title="移除"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ))}
+                          {extraReferences.length < MAX_EXTRA_REFERENCES && (
+                            <button
+                              type="button"
+                              onClick={() => extraReferenceInputRef.current?.click()}
+                              className="grid h-16 w-16 cursor-pointer place-items-center rounded-xl border border-dashed border-gray-200 bg-white text-gray-300 transition hover:border-gray-300 hover:text-gray-500"
+                              title="追加参考图"
+                            >
+                              <ImageUp className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {extraReferences.length === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => extraReferenceInputRef.current?.click()}
+                        className="mt-3 w-full cursor-pointer rounded-xl border border-dashed border-gray-200 bg-white px-3 py-2 text-[11px] font-bold text-gray-500 transition hover:border-gray-300 hover:text-black"
+                      >
+                        + 追加参考图（最多 {MAX_EXTRA_REFERENCES} 张：固定主体、人物 + 场景多图合成）
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <button
@@ -1456,8 +1651,28 @@ export default function GenerationWorkbench({
             >
               {isWorking || isPreparingReference ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
               {isWorking ? "生成中" : isPreparingReference ? "参考图上传中" : "立即生成"}
-              <span className="rounded-full bg-white/15 px-2 py-0.5 text-xs">1 次</span>
+              <span className="rounded-full bg-white/15 px-2 py-0.5 text-xs">{batchCount} 张</span>
             </button>
+            {batchCount > 1 && (
+              <p className="mt-1.5 text-center text-[10px] font-bold text-gray-400">串行生成 {batchCount} 张，完成后自动开始下一张</p>
+            )}
+            <div className="mt-2 flex items-center justify-center gap-2">
+              <span className="text-[10px] font-black uppercase tracking-wider text-gray-300">张数</span>
+              {[1, 2, 3, 4].map((count) => (
+                <button
+                  key={count}
+                  type="button"
+                  onClick={() => setBatchCount(count)}
+                  className={`h-7 w-7 cursor-pointer rounded-lg text-[11px] font-black transition ${
+                    batchCount === count
+                      ? "bg-black text-white shadow-md"
+                      : "bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-black"
+                  }`}
+                >
+                  {count}
+                </button>
+              ))}
+            </div>
           </div>
         </aside>
 
@@ -1478,14 +1693,22 @@ export default function GenerationWorkbench({
             </div>
 
             <div className="grid min-h-[300px] flex-1 place-items-center rounded-[2rem] border border-black/5 bg-white/70 p-4 shadow-sm backdrop-blur sm:min-h-[380px] lg:min-h-0">
-              <div className={`w-full ${frameMaxWidthClass}`}>
+              <div
+                className="w-full"
+                style={frameAspectRatio < 1 ? { maxWidth: portraitFrameMaxWidth } : undefined}
+              >
                 <div
                   className="relative mx-auto flex max-h-[62vh] w-full items-center justify-center overflow-hidden rounded-[1.5rem] border border-gray-100 bg-gray-50 shadow-2xl"
-                  style={frameStyle}
+                  style={{ aspectRatio: `${Math.max(frameAspectRatio, 0.2)}` }}
                 >
                   {previewUrl ? (
-                    <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_20%_20%,#ffffff,transparent_30%),linear-gradient(135deg,#f8fafc,#eceff3)] p-3 sm:p-4">
-                      <img src={previewUrl} alt="生成结果" className="max-h-full max-w-full rounded-[1.15rem] object-contain shadow-[0_18px_50px_rgba(15,23,42,0.12)]" />
+                    <div className="flex h-full w-full items-center justify-center p-3 sm:p-4">
+                      <StackGallery
+                        images={galleryImages.length > 1 ? galleryImages : [{ key: 0, src: previewUrl }]}
+                        index={galleryImages.length > 1 ? Math.min(galleryIndex, galleryImages.length - 1) : 0}
+                        onIndexChange={setGalleryIndex}
+                        className="h-full w-full"
+                      />
                     </div>
                   ) : (
                     <div className="flex h-full flex-col items-center justify-center bg-[radial-gradient(circle_at_30%_20%,#ffffff,transparent_32%),linear-gradient(135deg,#f8fafc,#eceff3)] text-center">
@@ -1565,6 +1788,7 @@ export default function GenerationWorkbench({
                     {previewUrl && (
                       <a
                         href={downloadUrl || previewUrl}
+                        download
                         className="rounded-xl border border-gray-100 bg-white px-3 py-2 text-xs font-bold text-gray-600 transition hover:border-gray-200 hover:text-black"
                       >
                         下载原图

@@ -94,18 +94,30 @@ export function createTask(payload) {
     }
   }
 
-  let reference = null;
-  if (payload.reference_upload_token || payload.reference_image_data_url) {
-    reference = registerReference({
+  // 参考图：单张向后兼容（reference_upload_token / reference_image_data_url），
+  // 多张走 reference_upload_tokens 数组（图生图固定主体 / 人物+场景多图合成）。
+  let references = [];
+  const multiTokens = Array.isArray(payload.reference_upload_tokens) ? payload.reference_upload_tokens : [];
+  if (multiTokens.length) {
+    for (const token of multiTokens.slice(0, 16)) {
+      const reference = registerReference({token: String(token || '').trim()});
+      if (reference) references.push(reference);
+    }
+    if (!references.length && generationMode === 'image_to_image') {
+      throw new ValidationError('参考图上传结果不存在或已过期，请重新选择图片');
+    }
+  } else if (payload.reference_upload_token || payload.reference_image_data_url) {
+    const reference = registerReference({
       token: String(payload.reference_upload_token || '').trim(),
       dataURL: String(payload.reference_image_data_url || ''),
       filename: String(payload.reference_image_name || ''),
     });
+    if (reference) references.push(reference);
     if (!reference && generationMode === 'image_to_image') {
       throw new ValidationError('参考图上传结果不存在或已过期，请重新选择图片');
     }
   }
-  if (generationMode === 'image_to_image' && !reference) {
+  if (generationMode === 'image_to_image' && !references.length) {
     throw new ValidationError('图生图需要先上传一张参考图');
   }
 
@@ -128,8 +140,9 @@ export function createTask(payload) {
     comfy_prompt_id: '',
     steps,
     seed,
-    reference_image_name: reference?.name || '',
-    reference_token: reference?.token || '',
+    reference_image_name: references[0]?.name || '',
+    reference_tokens: references.map((item) => item.token),
+    reference_token: references[0]?.token || '',
     error_code: '',
     error_message: '',
     provider_request_id: '',
@@ -183,15 +196,17 @@ async function run(taskNo) {
   const current = findTask(taskNo);
   if (!current || current.status === 'canceled') return;
 
-  const reference = current.reference_token ? mediaByToken(current.reference_token) : null;
+  const references = (current.reference_tokens || []).map((token) => mediaByToken(token)).filter(Boolean);
+  const primaryReference = references[0] || (current.reference_token ? mediaByToken(current.reference_token) : null);
 
   // GPU 互斥：与 TTS 合成共用一块 8G 显存。占位图不需要 GPU，直接跳过。
   let releaseGpu = null;
   if (isComfy) {
-    releaseGpu = acquireGpu('comfy', `生图任务 ${taskNo}`);
+    // 锁里带上任务号：前端在锁冲突弹窗里选「终止对方」时能精确取消这一条任务。
+    releaseGpu = acquireGpu('comfy', `生图任务 ${taskNo}`, taskNo);
     if (!releaseGpu) {
       const holder = gpuLockHolder();
-      throw new Error(`显卡正被${holder?.owner === 'tts' ? ' TTS 语音合成' : '其他生图任务'}占用（${holder?.label || ''}），请等它完成，或先在工作台里「释放内存」再提交。`);
+      throw new Error(`显卡正被${holder?.owner === 'tts' ? ' TTS 语音合成' : '其他生图任务'}占用（${holder?.label || ''}），请等它完成，或在提交时选择「终止对方」。`);
     }
   }
 
@@ -204,8 +219,17 @@ async function run(taskNo) {
           model: current.comfy_model,
           steps: current.steps,
           seed: current.seed,
-          reference: reference ? {file: reference.file, mimeType: reference.mime_type, name: reference.name} : null,
+          // 多张参考图逐张上传进 ComfyUI 工作流（LoadImage 节点 images.image_N）；
+          // 单张场景行为不变。占位图渠道只吃第一张。
+          references: references.map((item) => ({file: item.file, mimeType: item.mime_type, name: item.name})),
+          reference: primaryReference ? {file: primaryReference.file, mimeType: primaryReference.mime_type, name: primaryReference.name} : null,
           onProgress: updateProgress,
+          // 任务被取消（用户点了取消，或弹窗里选了「终止对方」）就立刻停轮询：
+          // 否则 ComfyUI 那边查不到结果会一直挂到超时，GPU 锁也跟着一直不释放。
+          shouldAbort: () => {
+            const target = findTask(taskNo);
+            return !target || target.status === 'canceled';
+          },
           onPromptId: (promptId) => {
             const target = findTask(taskNo);
             if (!target) return;
@@ -218,8 +242,8 @@ async function run(taskNo) {
           sizeCode: current.size_code,
           qualityCode: current.quality_code,
           negativePrompt: current.negative_prompt,
-          reference: reference
-            ? {dataURL: `data:${reference.mime_type};base64,${fs.readFileSync(reference.file).toString('base64')}`}
+          reference: primaryReference
+            ? {dataURL: `data:${primaryReference.mime_type};base64,${fs.readFileSync(primaryReference.file).toString('base64')}`}
             : null,
         });
 
@@ -344,6 +368,7 @@ export function serializeTask(task) {
     seed: task.seed ?? null,
     reference_image_name: task.reference_image_name,
     reference_image_attached: Boolean(task.reference_token),
+    reference_image_count: (task.reference_tokens || []).length,
     reference_image_data_url: '',
     quota_cost: task.quota_cost,
     error_code: task.error_code || '',

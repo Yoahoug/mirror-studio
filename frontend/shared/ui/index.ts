@@ -11,3 +11,4 @@ export * from './ProgressBar';
 export * from './Switch';
 export * from './Toast';
 export * from './ErrorBoundary';
+export * from './StackGallery';

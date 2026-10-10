@@ -29,6 +29,8 @@ import {
   type GenerationTask,
   type PaginationMeta,
 } from "../services/apiService";
+import { triggerBrowserDownload } from "@shared/services/download";
+import { StackGallery } from "@shared/ui";
 
 const statusText: Record<string, string> = {
   queued: "排队中",
@@ -528,7 +530,7 @@ export default function HistorySpace({
     if (isTtsTask(task)) {
       const audio = (task.outputs || []).find((output: any) => output.download_url) as any;
       if (audio?.download_url) {
-        window.location.href = audio.download_url;
+        triggerBrowserDownload(audio.download_url, audio.name);
       } else {
         addToast?.("该 TTS 任务暂无可下载音频", "info");
       }
@@ -536,8 +538,9 @@ export default function HistorySpace({
     }
     if (isNovelTask(task)) {
       const image = firstImage(task);
-      if (image?.download_url || image?.image_url) {
-        window.open(image.download_url || image.image_url, "_blank", "noopener,noreferrer");
+      const url = image?.download_url || (image?.image_url ? appendImageQuery(image.image_url, "download=1") : "");
+      if (url) {
+        triggerBrowserDownload(url);
       } else {
         addToast?.("该小说任务暂无可下载图片", "info");
       }
@@ -550,7 +553,7 @@ export default function HistorySpace({
     }
     try {
       const url = image.download_url || (await fetchImageDownloadUrl(image.id)).url;
-      window.location.href = url;
+      triggerBrowserDownload(url);
     } catch (error: any) {
       addToast?.(error.message || "原图下载失败", "error");
     }
@@ -758,13 +761,23 @@ export default function HistorySpace({
                 {filteredTasks.map((task, index) => {
                   const image = firstImage(task);
                   const previewUrl = image?.preview_url || "";
+                  // 堆叠重放：同一任务有多张可用成图（小说图集 / 多格串行）时呈扇形堆叠，点击翻页。
+                  const stackImages = (task.images || [])
+                    .filter((item) => item.status === "available" || item.preview_url)
+                    .map((item) => ({ key: item.id, src: item.preview_url || item.image_url || item.download_url || "" }))
+                    .filter((item) => item.src);
                   return (
                     <motion.article
                       key={task.task_no}
                       initial={{ opacity: 0, y: 16 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: Math.min(index, 12) * 0.025 }}
-                      onClick={() => onOpenTask?.(taskOpenKey(task))}
+                      onClick={(event) => {
+                        // 多图卡片：点击在图片上 = 翻下一张（堆叠重放）；点到操作按钮区 = 回跳编辑器。
+                        const target = event.target as HTMLElement;
+                        if (stackImages.length > 1 && target.closest("button") === null && target.tagName === "IMG") return;
+                        onOpenTask?.(taskOpenKey(task));
+                      }}
                       className="group cursor-pointer overflow-hidden rounded-[1.75rem] border border-gray-100 bg-white shadow-sm transition hover:-translate-y-1 hover:border-gray-200 hover:shadow-xl hover:shadow-black/5"
                     >
                       <div className="relative aspect-[4/3] bg-gray-50">
@@ -782,6 +795,13 @@ export default function HistorySpace({
                               );
                             })()}
                           </div>
+                        ) : stackImages.length > 1 ? (
+                          <StackGallery
+                            images={stackImages}
+                            className="h-full w-full"
+                            spread={10}
+                            showArrows={false}
+                          />
                         ) : previewUrl ? (
                           <img
                             src={previewUrl}

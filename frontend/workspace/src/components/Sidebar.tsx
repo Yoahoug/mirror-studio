@@ -7,7 +7,8 @@ import {
   Sparkles,
   PanelLeftClose,
   PanelLeftOpen,
-  Info
+  Info,
+  Library
 } from "lucide-react";
 import { useLanguage } from "@shared/i18n";
 
@@ -37,11 +38,14 @@ export default function Sidebar({
   const { t } = useLanguage();
   const ws = t.workspace;
 
+  // 菜单顺序（本地开发者模式）：云生图排最后，避免误触点进「占位图」渠道；
+  // 资产（画廊与历史）固定压轴。线上模式没有 comfy/tts，顺序自然收敛为 创作→绘卷→资产。
   const menuItems = [
-    { id: "create", label: ws.nav.create, icon: LayoutGrid },
     ...(showComfy ? [{ id: "comfy", label: ws.image.comfyEngine, icon: Cpu }] : []),
     ...(showTts ? [{ id: "tts", label: ws.audio.title, icon: AudioLines }] : []),
     { id: "novelviz", label: ws.subnav.story, icon: Film },
+    { id: "history", label: ws.nav.assets, icon: Library },
+    { id: "create", label: ws.nav.create, icon: LayoutGrid },
   ].map((item) => ({ ...item, isAction: false }));
 
   const handleItemClick = (id: string) => {

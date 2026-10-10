@@ -1,9 +1,9 @@
-import React, { useState, useEffect, Suspense, lazy } from "react";
+import React, { useState, useEffect, Suspense, lazy, useRef } from "react";
 import { AnimatePresence } from "motion/react";
 import TopToolbar from "./components/TopToolbar";
 import Sidebar from "./components/Sidebar";
 import HistorySpace from "./components/HistorySpace";
-import GenerationWorkbench from "./components/GenerationWorkbench";
+import GenerationWorkbench, { type WorkbenchAssistantHandle } from "./components/GenerationWorkbench";
 import NovelVisualizationSpace from "./components/NovelVisualizationSpace";
 import ReleaseNotesModal, { type ReleaseInfo } from "./components/ReleaseNotesModal";
 import SettingsModal, { type SettingsTabId } from "./components/SettingsModal";
@@ -15,6 +15,7 @@ import { useLanguage } from "@shared/i18n";
 import { appConfig } from "@shared/config/app-mode";
 import { setOnAuthRequired } from "@shared/services/client";
 import { Skeleton } from "@shared/ui";
+import type { AssistantScene, AssistantWorkbenchState } from "@shared/types/assistant";
 
 const ChatWidget = lazy(() => import("./components/ChatWidget"));
 const ComfyWorkbench = lazy(() => import("./components/ComfyWorkbench"));
@@ -66,6 +67,10 @@ export default function App() {
   const [showReleaseNotes, setShowReleaseNotes] = useState(false);
   // 悬浮窗对话「填回描述」的投递：只有当前在生图板块时才接得住。
   const [fillRequest, setFillRequest] = useState<{ id: number; text: string } | null>(null);
+  // 工作台 ref：悬浮窗助手读「当前板块状态」、写「结构化回填」都走这里（create/comfy/tts 各持一个）。
+  const generationRef = useRef<WorkbenchAssistantHandle>(null);
+  const comfyRef = useRef<WorkbenchAssistantHandle>(null);
+  const ttsRef = useRef<WorkbenchAssistantHandle>(null);
 
   // Read initial user data from DOM (injected by Django template)
   const rootEl = document.getElementById("workspace-root");
@@ -309,11 +314,43 @@ export default function App() {
     setShowSettings(true);
   };
 
+  // 悬浮窗助手：按当前板块解析要联动的工作台（生图两板块共用 image 场景，TTS 单独）。
+  const activeAssistantRef = () => {
+    if (activeTab === "comfy") return comfyRef.current;
+    if (activeTab === "tts") return ttsRef.current;
+    return generationRef.current;
+  };
+
   // 悬浮窗对话把提示词填进「创作描述」：不在生图板块时返回 false（悬浮窗改成复制到剪贴板）。
   const handleChatFillPrompt = (text: string) => {
     if (activeTab !== "create" && activeTab !== "comfy") return false;
     setFillRequest({ id: Date.now(), text });
     return true;
+  };
+
+  // 助手上下文：当前板块 + 输入快照（随每轮对话发给服务端拼 system prompt）。
+  const handleAssistantContext = (): { scene: AssistantScene; mode?: string; snapshot: string } | null => {
+    const handle = activeAssistantRef();
+    if (!handle) return null;
+    try {
+      return handle.getAssistantState();
+    } catch {
+      return null;
+    }
+  };
+
+  // 助手回复末尾的 <<<FILL>>> JSON：交给当前板块的工作台按字段回填。
+  const handleAssistantFill = (fill: import("@shared/types/assistant").AssistantFillPayload) => {
+    activeAssistantRef()?.applyAssistantFill(fill);
+  };
+
+  // 动态「已入框」：当前板块工作台实时比对表单与计划（用户改过表单 → 按钮复归可点）。
+  const handleMatchesAssistantFill = (fill: import("@shared/types/assistant").AssistantFillPayload) => {
+    try {
+      return activeAssistantRef()?.matchesAssistantFill(fill) ?? false;
+    } catch {
+      return false;
+    }
   };
 
   useEffect(() => {
@@ -379,7 +416,6 @@ export default function App() {
         showComfy={comfyEnabled}
         showTts={ttsEnabled}
       />
-
       <main className="relative z-0 flex flex-1 flex-col pb-24 md:pb-0">
         <header className="z-40 flex flex-col gap-3 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)]/85 px-4 py-3 backdrop-blur-md transition-all sm:px-6 md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -420,6 +456,7 @@ export default function App() {
             ) : activeTab === 'comfy' && appConfig.features.comfy ? (
               <Suspense fallback={<div className="p-8"><Skeleton className="h-64 w-full" /></div>}>
                 <ComfyWorkbench
+                  ref={comfyRef}
                   key="comfy-workbench"
                   isAuthenticated={isAuthenticated}
                   selectedModel={selectedModel}
@@ -436,6 +473,7 @@ export default function App() {
             ) : activeTab === 'tts' && appConfig.features.tts ? (
               <Suspense fallback={<div className="p-8"><Skeleton className="h-64 w-full" /></div>}>
                 <TtsWorkbench
+                  ref={ttsRef}
                   key="tts-workbench"
                   isAuthenticated={isAuthenticated}
                   selectedModel={selectedModel}
@@ -460,6 +498,7 @@ export default function App() {
               />
             ) : (
               <GenerationWorkbench
+                ref={generationRef}
                 key="generation-workbench"
                 isAuthenticated={isAuthenticated}
                 selectedModel={selectedModel}
@@ -509,7 +548,14 @@ export default function App() {
       {/* 悬浮窗对话：只在本地开发者模式（需要本机的对话中转站接口） */}
       {appConfig.features.chatWidget && (
         <Suspense fallback={null}>
-          <ChatWidget addToast={addToast} onFillPrompt={handleChatFillPrompt} />
+          <ChatWidget
+            addToast={addToast}
+            onFillPrompt={handleChatFillPrompt}
+            activeTab={activeTab}
+            getAssistantContext={handleAssistantContext}
+            onAssistantFill={handleAssistantFill}
+            matchesAssistantFill={handleMatchesAssistantFill}
+          />
         </Suspense>
       )}
     </div>

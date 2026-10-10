@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  ImagePlus,
   Loader2,
   MessageSquare,
   Plus,
@@ -16,14 +17,18 @@ import {
   Wand2,
   X,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   fetchChatConfig,
   fetchChatRelayModels,
   saveChatConfig,
   streamChat,
+  type ChatMessageContent,
   type ChatProviderConfig,
   type ChatReasoningEffort,
 } from "../services/apiService";
+import { ASSISTANT_FILL_LABELS, APPROVAL_PATTERN, type AssistantFillPayload, type AssistantOption, type AssistantOptionsPayload, type AssistantWorkbenchState } from "@shared/types/assistant";
 
 // 悬浮窗对话（仅本地开发者模式）：延续参考项目（Dreamframe 的 DreamPilot）的形态——
 // 会话列表 + 流式思考过程 + 「填回描述」，配置项改成工作台里直接可改的线上中转站。
@@ -37,9 +42,67 @@ const MAX_SESSIONS = 20;
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
-  content: string;
+  /** 文本或多模态数组（text + image_url，读图）；历史里 assistant 恒为文本。 */
+  content: ChatMessageContent;
   reasoning?: string;
   error?: boolean;
+  /** 助手回复末尾解析出的参数计划（没有则 undefined）；发送给上游时剔除。 */
+  fill?: AssistantFillPayload | null;
+  /** 助手回复末尾解析出的选择框（没有则 undefined）；用户点选后 prompt 作为下一条消息。 */
+  options?: AssistantOptionsPayload | null;
+}
+
+/** 助手回复的填充块分隔符（与 scripts/localapi/chat.mjs 的回填契约对应）。 */
+const FILL_BLOCK_RE = /<<<FILL>>>\s*([\s\S]*?)\s*<<<END>>>/;
+const OPTIONS_BLOCK_RE = /<<<OPTIONS>>>\s*([\s\S]*?)\s*<<<END>>>/;
+
+/** 从助手完整回复里拆出正文、参数计划与选择框；JSON 解析失败时留在正文里展示。 */
+export function splitFillBlock(content: string): {
+  body: string;
+  fill: AssistantFillPayload | null;
+  options: AssistantOptionsPayload | null;
+} {
+  let body = content;
+  let fill: AssistantFillPayload | null = null;
+  let options: AssistantOptionsPayload | null = null;
+
+  const fillMatch = body.match(FILL_BLOCK_RE);
+  if (fillMatch) {
+    body = body.slice(0, fillMatch.index ?? 0) + body.slice((fillMatch.index ?? 0) + fillMatch[0].length);
+    try {
+      const parsed = JSON.parse(fillMatch[1]);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const plan: AssistantFillPayload = {};
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof value === "string" && value.trim()) plan[key] = value.trim();
+          else if (typeof value === "number" && Number.isFinite(value)) plan[key] = value;
+        }
+        if (Object.keys(plan).length) fill = plan;
+      }
+    } catch {
+      // JSON 没写合法：整块留在正文里，用户仍能看到并手动复制。
+      body = content;
+    }
+  }
+
+  const optionsMatch = body.match(OPTIONS_BLOCK_RE);
+  if (optionsMatch) {
+    body = body.slice(0, optionsMatch.index ?? 0) + body.slice((optionsMatch.index ?? 0) + optionsMatch[0].length);
+    try {
+      const parsed = JSON.parse(optionsMatch[1]);
+      if (Array.isArray(parsed)) {
+        const items = parsed
+          .map((item: any) => ({ label: String(item?.label || "").trim(), prompt: String(item?.prompt || "").trim() }))
+          .filter((item: AssistantOption) => item.label && item.prompt)
+          .slice(0, 6);
+        if (items.length) options = items;
+      }
+    } catch {
+      // 选择框 JSON 不合法：留在正文里展示原文。
+    }
+  }
+
+  return { body: body.trim(), fill, options };
 }
 
 interface ChatSession {
@@ -60,7 +123,9 @@ const ENDPOINT_PRESETS = [
   { label: "本机 LM Studio", baseURL: "http://127.0.0.1:1234" },
 ];
 
-const DEMO_PROMPTS = ["黄昏天台上的少女，电影感", "赛博朋克夜市街景", "一只穿宇航服的柴犬"];
+const DEMO_PROMPTS = ["黄昏天台上的少女，电影感", "赛博朋克夜市街景", "一只穿宇航服的柴犬", "随便说点好玩的生图玩法"];
+
+const TTS_DEMO_PROMPTS = ["帮我设计一个慵懒女声的音色", "给这个音色配一段早安问候的话", "参考音频的文本怎么写"];
 
 function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -82,29 +147,54 @@ function loadSessions(): ChatSession[] {
 
 function sessionTitle(messages: ChatMessage[]): string {
   const first = messages.find((message) => message.role === "user");
-  return first?.content.trim().slice(0, 24) || "新对话";
+  const text = first ? messageContentText(first.content) : "";
+  return text.slice(0, 24) || "新对话";
 }
 
-/** 从最后一条助手消息里提取可回填的提示词（去掉代码块围栏）。 */
+/** 从最后一条助手消息里提取可回填的提示词（去掉代码块围栏与 fill 块）。 */
 export function extractPromptForFill(messages: ChatMessage[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant" || message.error) continue;
-    const text = message.content.trim();
+    const text = (typeof message.content === "string" ? message.content : "").trim();
     if (!text) continue;
-    const unwrapped = text.replace(/^```[a-zA-Z]*\n([\s\S]*?)\n```$/m, "$1").trim();
+    const { body, fill } = splitFillBlock(text);
+    // 有结构化回填时优先取 prompt 字段；否则取正文（去围栏）。
+    const source = fill?.prompt?.trim() || body;
+    if (!source) continue;
+    const unwrapped = source.replace(/^```[a-zA-Z]*\n([\s\S]*?)\n```$/m, "$1").trim();
     return unwrapped.slice(0, 4000);
   }
   return null;
+}
+
+/** 取消息 content 的纯文本（多模态数组取 text 段），用于会话标题/空值判断。 */
+export function messageContentText(content: ChatMessageContent): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("")
+      .trim();
+  }
+  return "";
 }
 
 interface ChatWidgetProps {
   addToast: (message: string, type?: "success" | "error" | "info") => void;
   /** 把提示词填进当前生图板块的「创作描述」；不在板块里时返回 false（调用方改成复制）。 */
   onFillPrompt: (prompt: string) => boolean;
+  /** 当前所在板块（App 传入）：决定助手的人设与可回填字段。 */
+  activeTab: string;
+  /** 读当前板块的输入快照（随每轮对话发给服务端拼 system prompt）。 */
+  getAssistantContext: () => AssistantWorkbenchState | null;
+  /** 助手回复解析出的回填 JSON：交给当前板块工作台写表单。 */
+  onAssistantFill: (fill: AssistantFillPayload) => void;
+  /** 动态「已入框」判定：当前板块工作台的表单是否与计划一致（用户改过表单会复归）。 */
+  matchesAssistantFill: (fill: AssistantFillPayload) => boolean;
 }
 
-export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) {
+export default function ChatWidget({ addToast, onFillPrompt, activeTab, getAssistantContext, onAssistantFill, matchesAssistantFill }: ChatWidgetProps) {
   const [open, setOpen] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -117,6 +207,7 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
     return saved;
   });
   const [input, setInput] = useState("");
+  const [pendingImage, setPendingImage] = useState<{ dataUrl: string; name: string } | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamError, setStreamError] = useState("");
   const [copiedId, setCopiedId] = useState("");
@@ -125,6 +216,7 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dirtyRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeId) || sessions[0] || null,
@@ -198,7 +290,7 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
 
   const sendMessage = async (text: string) => {
     const content = text.trim();
-    if (!content || isStreaming || !activeSession) return;
+    if ((!content && !pendingImage) || isStreaming || !activeSession) return;
     if (!config?.configured) {
       addToast("还没有配置对话中转站：在设置里填接口地址与模型", "info");
       setShowSettings(true);
@@ -208,11 +300,42 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
     setStreamError("");
     setIsStreaming(true);
 
-    const userMessage: ChatMessage = { id: newId(), role: "user", content };
+    // 快捷同意：用户回「可以/同意/ok」等认可词时，若上一条助手消息带着参数计划，
+    // 直接入框，不再消耗一轮模型对话（计划本身就是最终版）。
+    if (content && APPROVAL_PATTERN.test(content) && !pendingImage && activeSession.messages.length) {
+      for (let index = activeSession.messages.length - 1; index >= 0; index -= 1) {
+        const message = activeSession.messages[index];
+        if (message.role === "user") break;
+        if (message.role === "assistant" && message.fill && !message.error) {
+          setIsStreaming(false);
+          onAssistantFill(message.fill);
+          addToast("已按计划入框，点「立即生成」开始", "success");
+          const acknowledged: ChatMessage = { id: newId(), role: "user", content };
+          updateSession(activeSession.id, (session) => ({
+            ...session,
+            messages: [...session.messages, acknowledged],
+          }));
+          return;
+        }
+      }
+    }
+
+    // 有图时组多模态消息（OpenAI 兼容格式）；纯文本保持 string。
+    const image = pendingImage;
+    setPendingImage(null);
+    const userContent: ChatMessageContent = image
+      ? [
+          ...(content ? [{ type: "text" as const, text: content }] : []),
+          { type: "image_url" as const, image_url: { url: image.dataUrl } },
+        ]
+      : content;
+    const userMessage: ChatMessage = { id: newId(), role: "user", content: userContent };
     const assistantId = newId();
+    const context = getAssistantContext();
+    // 发给上游的历史：剔除 fill 块与错误消息，多模态按原样透传（服务端做预算裁剪）。
     const history = [...activeSession.messages, userMessage]
-      .filter((message) => !message.error && message.content.trim())
-      .map((message) => ({ role: message.role, content: message.content }));
+      .filter((message) => !message.error && messageContentText(message.content))
+      .map((message) => ({ role: message.role, content: message.content as ChatMessageContent }));
 
     updateSession(activeSession.id, (session) => ({
       ...session,
@@ -242,12 +365,17 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
             patchAssistant({ content: answer, reasoning: reasoning || undefined });
           },
         },
-        controller.signal
+        controller.signal,
+        context ? { scene: context.scene, mode: context.mode, snapshot: context.snapshot } : {}
       );
       if (!answer && !reasoning) {
         patchAssistant({ content: "（上游没有返回内容）", error: true });
       } else if (!answer && reasoning) {
         patchAssistant({ content: "（模型只输出了思考过程，没有正文；可以把思考等级调低再试）", error: true });
+      } else {
+        // 回复完成：拆出参数计划/选择框存到消息上（渲染卡片），正文不再显示 JSON 本体。
+        const { body, fill, options } = splitFillBlock(answer);
+        patchAssistant({ content: body || answer, fill, options });
       }
     } catch (error: any) {
       const aborted = error instanceof DOMException && error.name === "AbortError";
@@ -262,10 +390,36 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
     }
   };
 
+  /** 输入框粘贴截图/图片 → 直接挂到待发送区（多模态读图）。 */
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const file = Array.from(event.clipboardData?.files || []).find((item) => item.type.startsWith("image/"));
+    if (!file) return;
+    event.preventDefault();
+    void readImageFile(file);
+  };
+
+  const readImageFile = (file: File) => {
+    if (file.size > 8 * 1024 * 1024) {
+      addToast("图片太大（上限 8MB）", "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === "string") {
+        setPendingImage({ dataUrl: reader.result, name: file.name || "截图" });
+      }
+    };
+    reader.onerror = () => addToast("图片读取失败", "error");
+    reader.readAsDataURL(file);
+  };
+
   const handleStop = () => {
     abortRef.current?.abort();
   };
 
+  // 助手是否感知到工作台（App 里对应板块挂载了 ref）；TTS 场景下「填回描述」语义不同，隐藏该按钮，
+  // 结构化回填走消息卡片上的「填入」按钮。
+  const assistantScene = getAssistantContext()?.scene || null;
   const handleFill = () => {
     const prompt = extractPromptForFill(activeSession?.messages || []);
     if (!prompt) return;
@@ -274,7 +428,7 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
     addToast(filled ? "已填入创作描述" : "提示词已复制；切到生图板块粘贴即可", filled ? "success" : "info");
   };
 
-  const canFill = extractPromptForFill(activeSession?.messages || []) !== null;
+  const canFill = assistantScene === "image" && extractPromptForFill(activeSession?.messages || []) !== null;
   const configured = Boolean(config?.configured);
 
   return (
@@ -417,12 +571,25 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
                   <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-indigo-100 to-violet-100 text-indigo-500">
                     <Wand2 className="h-6 w-6" />
                   </div>
-                  <div className="text-sm font-black text-gray-700">描述你想要的画面</div>
-                  <div className="mt-1 px-6 text-xs leading-relaxed text-gray-400">
-                    中文描述、随手一句话都行，我按生图提示词的写法扩写成英文提示词，点「填回描述」直接进左侧创作描述。
-                  </div>
+                  {assistantScene === "tts" ? (
+                    <>
+                      <div className="text-sm font-black text-gray-700">聊聊你的语音怎么配</div>
+                      <div className="mt-1 px-6 text-xs leading-relaxed text-gray-400">
+                        我知道你正在 TTS 板块的哪个模式：音色设计帮你把人物声音形象写成音色描述，克隆/预设帮你写要合成的话；
+                        有空的字段我会给「填入」按钮，点一下直接写进表单。也可以贴截图让我看。
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-sm font-black text-gray-700">描述你想要的画面</div>
+                      <div className="mt-1 px-6 text-xs leading-relaxed text-gray-400">
+                        中文描述、随手一句话都行：想要灵感就让我"推荐几个好玩的玩法"，挑一个编号我给完整提示词；
+                        点「填回描述」直接进左侧创作描述，也可以贴截图让我看。
+                      </div>
+                    </>
+                  )}
                   <div className="mt-4 flex flex-wrap justify-center gap-2 px-4">
-                    {DEMO_PROMPTS.map((demo) => (
+                    {(assistantScene === "tts" ? TTS_DEMO_PROMPTS : DEMO_PROMPTS).map((demo) => (
                       <button
                         key={demo}
                         type="button"
@@ -442,10 +609,20 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
                   message={message}
                   copied={copiedId === message.id}
                   onCopy={() => {
-                    navigator.clipboard?.writeText(message.content).catch(() => {});
+                    const text = typeof message.content === "string" ? message.content : messageContentText(message.content);
+                    navigator.clipboard?.writeText(text).catch(() => {});
                     setCopiedId(message.id);
                     window.setTimeout(() => setCopiedId(""), 1500);
                   }}
+                  onApplyFill={(fill) => {
+                    onAssistantFill(fill);
+                    addToast("参数已全部入框，点「立即生成」开始", "success");
+                  }}
+                  onPickOption={(prompt) => {
+                    // 选择框点选：选中的内容作为用户下一条消息直接发出。
+                    if (!isStreaming) void sendMessage(prompt);
+                  }}
+                  matchesAssistantFill={matchesAssistantFill}
                 />
               ))}
 
@@ -469,34 +646,74 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
             {/* 底部：填回描述 + 输入框 */}
             <div className="border-t border-gray-100 bg-white/80 px-4 pb-3 pt-2">
               <div className="mb-2 flex items-center justify-between">
-                <button
-                  type="button"
-                  onClick={handleFill}
-                  disabled={!canFill || isStreaming}
-                  className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-black transition ${
-                    canFill && !isStreaming
-                      ? "cursor-pointer bg-gradient-to-r from-[#6d5dfc] to-indigo-500 text-white shadow-sm hover:shadow-md"
-                      : "cursor-not-allowed bg-gray-100 text-gray-400"
-                  }`}
-                  title={canFill ? "把最新一条提示词填进当前板块的创作描述" : "还没有可用的提示词"}
-                >
-                  <Wand2 className="h-3.5 w-3.5" /> 填回描述
-                </button>
+                {assistantScene !== "tts" ? (
+                  <button
+                    type="button"
+                    onClick={handleFill}
+                    disabled={!canFill || isStreaming}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-black transition ${
+                      canFill && !isStreaming
+                        ? "cursor-pointer bg-gradient-to-r from-[#6d5dfc] to-indigo-500 text-white shadow-sm hover:shadow-md"
+                        : "cursor-not-allowed bg-gray-100 text-gray-400"
+                    }`}
+                    title={canFill ? "把最新一条提示词填进当前板块的创作描述" : "还没有可用的提示词"}
+                  >
+                    <Wand2 className="h-3.5 w-3.5" /> 填回描述
+                  </button>
+                ) : (
+                  <span className="text-[11px] font-bold text-gray-400">TTS 助手：回复卡片上的「填入」可写表单</span>
+                )}
                 <span className="text-[11px] font-bold text-gray-400">
                   {config?.reasoning_effort === "off" ? "不思考" : `思考等级 ${config?.reasoning_effort || "high"}`} · 不限 tokens
                 </span>
               </div>
+              {pendingImage && (
+                <div className="mb-2 flex items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50/70 px-2.5 py-1.5">
+                  <img src={pendingImage.dataUrl} alt={pendingImage.name} className="h-10 w-10 rounded-lg object-cover" />
+                  <span className="min-w-0 flex-1 truncate text-[11px] font-bold text-indigo-800">{pendingImage.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPendingImage(null)}
+                    className="cursor-pointer rounded p-1 text-indigo-400 hover:text-indigo-700"
+                    title="移除图片"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
               <div className="flex items-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`grid h-10 w-10 shrink-0 cursor-pointer place-items-center rounded-full transition ${
+                    pendingImage ? "bg-indigo-100 text-indigo-600" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                  }`}
+                  title={pendingImage ? "已附图片，再点可更换" : "附一张图片让助手看（读图）"}
+                >
+                  <ImagePlus className="h-4 w-4" />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) readImageFile(file);
+                    event.target.value = "";
+                  }}
+                />
                 <textarea
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
+                  onPaste={handlePaste}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                       event.preventDefault();
                       void sendMessage(input);
                     }
                   }}
-                  placeholder="描述画面，Enter 发送，Shift+Enter 换行"
+                  placeholder="描述画面或提问，可直接粘贴截图；Enter 发送，Shift+Enter 换行"
                   rows={2}
                   className="max-h-32 flex-1 resize-none rounded-2xl border border-gray-200 bg-white px-3.5 py-2.5 text-sm text-gray-800 outline-none placeholder:text-gray-400 focus:border-[#6d5dfc]/50 focus:ring-2 focus:ring-[#6d5dfc]/15"
                 />
@@ -513,7 +730,7 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
                   <button
                     type="button"
                     onClick={() => void sendMessage(input)}
-                    disabled={!input.trim()}
+                    disabled={!input.trim() && !pendingImage}
                     className="grid h-10 w-10 shrink-0 cursor-pointer place-items-center rounded-full bg-gradient-to-br from-[#6d5dfc] to-indigo-500 text-white transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40"
                     title="发送"
                   >
@@ -531,18 +748,109 @@ export default function ChatWidget({ addToast, onFillPrompt }: ChatWidgetProps) 
 
 // ── 消息气泡 ──
 
-function ChatMessageBubble({ message, copied, onCopy }: { message: ChatMessage; copied: boolean; onCopy: () => void }) {
+/** 助手正文里的 markdown 排版：小字号场景下的紧凑样式映射。 */
+const markdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => <p className="mb-1.5 whitespace-pre-wrap break-words last:mb-0">{children}</p>,
+  ul: ({ children }: { children?: React.ReactNode }) => <ul className="mb-1.5 list-disc space-y-0.5 pl-4 last:mb-0">{children}</ul>,
+  ol: ({ children }: { children?: React.ReactNode }) => <ol className="mb-1.5 list-decimal space-y-0.5 pl-4 last:mb-0">{children}</ol>,
+  li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed">{children}</li>,
+  h1: ({ children }: { children?: React.ReactNode }) => <p className="mb-1 text-sm font-black">{children}</p>,
+  h2: ({ children }: { children?: React.ReactNode }) => <p className="mb-1 text-sm font-black">{children}</p>,
+  h3: ({ children }: { children?: React.ReactNode }) => <p className="mb-1 text-[13px] font-black">{children}</p>,
+  blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="mb-1.5 border-l-2 border-gray-200 pl-2 text-gray-500">{children}</blockquote>,
+  code: ({ children }: { children?: React.ReactNode }) => <code className="rounded bg-gray-100 px-1 py-0.5 text-[12px]">{children}</code>,
+  pre: ({ children }: { children?: React.ReactNode }) => <pre className="mb-1.5 overflow-x-auto rounded-xl bg-gray-50 p-2 text-[12px] leading-5 last:mb-0">{children}</pre>,
+  a: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="text-indigo-600 underline underline-offset-2">{children}</a>
+  ),
+  table: ({ children }: { children?: React.ReactNode }) => <table className="mb-1.5 w-full border-collapse text-[12px] last:mb-0">{children}</table>,
+  th: ({ children }: { children?: React.ReactNode }) => <th className="border border-gray-200 bg-gray-50 px-1.5 py-1 text-left font-bold">{children}</th>,
+  td: ({ children }: { children?: React.ReactNode }) => <td className="border border-gray-100 px-1.5 py-1 align-top">{children}</td>,
+};
+
+function ChatMessageBubble({
+  message,
+  copied,
+  onCopy,
+  onApplyFill,
+  onPickOption,
+  matchesAssistantFill,
+}: {
+  message: ChatMessage;
+  copied: boolean;
+  onCopy: () => void;
+  onApplyFill: (fill: AssistantFillPayload) => void;
+  onPickOption: (prompt: string) => void;
+  matchesAssistantFill: (fill: AssistantFillPayload) => boolean;
+}) {
   const [showReasoning, setShowReasoning] = useState(false);
+  const [copiedField, setCopiedField] = useState("");
+  // 「已入框」不做本地记忆：每次渲染实时问工作台「当前表单是否与计划一致」，
+  // 用户入框后又改了表单会自动复归为可点状态。手动改表单不触发悬浮窗重渲染，
+  // 所以再加一个轮询（1s）兜底刷新判定。
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!message.fill) return;
+    const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [message.fill]);
+  const alreadyApplied = useMemo(() => {
+    if (!message.fill) return false;
+    try {
+      return matchesAssistantFill(message.fill);
+    } catch {
+      return false;
+    }
+  }, [message.fill, matchesAssistantFill]);
 
   if (message.role === "user") {
+    const parts = Array.isArray(message.content) ? message.content : null;
+    const text = typeof message.content === "string" ? message.content : parts?.filter((part) => part.type === "text").map((part) => part.text).join("") || "";
+    const images = parts ? parts.filter((part) => part.type === "image_url") : [];
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-gradient-to-br from-[#6d5dfc] to-indigo-500 px-3.5 py-2.5 text-sm leading-relaxed text-white shadow-sm">
-          {message.content}
+        <div className="max-w-[85%] space-y-1.5">
+          {images.map((part, index) => (
+            <img
+              key={index}
+              src={part.image_url.url}
+              alt={`随消息附带的图片 ${index + 1}`}
+              className="ml-auto max-h-40 rounded-2xl rounded-br-md object-cover shadow-sm"
+            />
+          ))}
+          {text ? (
+            <div className="rounded-2xl rounded-br-md bg-gradient-to-br from-[#6d5dfc] to-indigo-500 px-3.5 py-2.5 text-sm leading-relaxed text-white shadow-sm">
+              {text}
+            </div>
+          ) : null}
         </div>
       </div>
     );
   }
+
+  const fillEntries = message.fill
+    ? Object.entries(message.fill).filter(([, value]) => {
+        if (typeof value === "number") return Number.isFinite(value) && value > 0;
+        return typeof value === "string" && value.trim();
+      })
+    : [];
+
+  const handleCopyField = (key: string, value: string) => {
+    navigator.clipboard?.writeText(value).catch(() => {});
+    setCopiedField(key);
+    window.setTimeout(() => setCopiedField(""), 1500);
+  };
+
+  /** 参数计划展示值：数字与缩写字段给人话，长文本截断预览。 */
+  const fillDisplay = (key: string, value: string | number): string => {
+    if (key === "batch_count") return `${value} 张（本地串行）`;
+    if (key === "style_code") {
+      const names: Record<string, string> = { general: "通用", cinematic: "电影感", anime: "动漫", photography: "摄影" };
+      return names[String(value)] || String(value);
+    }
+    const text = String(value);
+    return text.length > 160 ? `${text.slice(0, 160)}…` : text;
+  };
 
   return (
     <div className="group flex justify-start">
@@ -569,7 +877,82 @@ function ChatMessageBubble({ message, copied, onCopy }: { message: ChatMessage; 
             )}
           </div>
         ) : null}
-        <div className="whitespace-pre-wrap break-words">{message.content || "…"}</div>
+        <div className="break-words [&>*:first-child]:mt-0">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {(typeof message.content === "string" ? message.content : messageContentText(message.content)) || "…"}
+          </ReactMarkdown>
+        </div>
+        {fillEntries.length > 0 && !message.error ? (
+          <div className="mt-2 space-y-1.5 rounded-xl border border-indigo-100 bg-indigo-50/60 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-indigo-500">
+                <Wand2 className="h-3 w-3" />
+                参数计划
+              </div>
+              <button
+                type="button"
+                disabled={alreadyApplied}
+                onClick={() => {
+                  onApplyFill(message.fill as AssistantFillPayload);
+                }}
+                className={`flex cursor-pointer items-center gap-1 rounded-lg px-3 py-1.5 text-[11px] font-black shadow-sm transition ${
+                  alreadyApplied
+                    ? "cursor-default bg-emerald-500/90 text-white"
+                    : "bg-gradient-to-r from-[#6d5dfc] to-indigo-500 text-white hover:shadow-md"
+                }`}
+                title="点一下：所有参数自动填进工作台表单（生成按钮仍由你自己按）"
+              >
+                {alreadyApplied ? <><Check className="h-3 w-3" /> 已入框</> : <><Check className="h-3 w-3" /> 同意，全部入框</>}
+              </button>
+            </div>
+            {typeof message.fill?.note === "string" && message.fill.note ? (
+              <p className="px-0.5 text-[11px] leading-4 text-indigo-700">{message.fill.note}</p>
+            ) : null}
+            <div className="grid grid-cols-2 gap-1.5">
+              {fillEntries.map(([key, value]) => {
+                const label = ASSISTANT_FILL_LABELS[key] || key;
+                const isLong = typeof value === "string" && value.length > 60;
+                return (
+                  <div key={key} className={`rounded-lg bg-white/90 px-2.5 py-1.5 ${isLong ? "col-span-2" : ""}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-black text-gray-400">{label}</span>
+                      {isLong ? (
+                        <button
+                          type="button"
+                          onClick={() => handleCopyField(key, String(value))}
+                          className="cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-bold text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                        >
+                          {copiedField === key ? "已复制" : "复制"}
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className={`mt-0.5 break-words text-[12px] leading-5 text-gray-700 ${isLong ? "max-h-24 overflow-y-auto whitespace-pre-wrap" : "truncate"}`}>
+                      {fillDisplay(key, value)}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+        {message.options && message.options.length > 0 && !message.error ? (
+          <div className="mt-2 space-y-1.5">
+            {message.options.map((option, index) => (
+              <button
+                key={index}
+                type="button"
+                onClick={() => onPickOption(option.prompt)}
+                className="group flex w-full cursor-pointer items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-left transition hover:border-[#6d5dfc]/50 hover:bg-indigo-50/60"
+              >
+                <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-gray-100 text-[10px] font-black text-gray-500 group-hover:bg-[#6d5dfc] group-hover:text-white">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[12px] font-bold text-gray-700 group-hover:text-indigo-800">{option.label}</span>
+                <Send className="h-3 w-3 shrink-0 text-gray-300 group-hover:text-indigo-500" />
+              </button>
+            ))}
+          </div>
+        ) : null}
         {message.content && !message.error ? (
           <div className="mt-1.5 flex justify-end opacity-0 transition group-hover:opacity-100">
             <button

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type Ref } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowRight,
@@ -19,21 +19,27 @@ import {
 import {
   AuthRequiredError,
   cancelUploadSession,
-  chatWithAI,
   createGenerationTask,
+  expandPromptWithAI,
   fetchComfyLog,
   fetchComfyStatus,
+  fetchGpuStatus,
   fetchImageDownloadUrl,
   fetchTaskDetail,
   freeComfyMemory,
+  terminateGpuHolder,
   uploadFileResumable,
   type ChatModel,
   type ComfyLogReport,
   type ComfyStatus,
   type GenerationTask,
+  type GpuLockHolder,
   type ReferenceUploadResult,
   type UploadProgress,
 } from "../services/apiService";
+import type { AssistantFillPayload, AssistantWorkbenchState } from "@shared/types/assistant";
+import type { WorkbenchAssistantHandle } from "./GenerationWorkbench";
+import GpuBusyDialog from "./GpuBusyDialog";
 import ComfySettingsModal from "./ComfySettingsModal";
 
 // 「Comfy 生图」板块：仅本地开发者模式（npm run local）出现，任务交给本机 ComfyUI 执行。
@@ -41,6 +47,8 @@ import ComfySettingsModal from "./ComfySettingsModal";
 // 差别只在：模型是 ComfyUI 的三个本地工作流、多一组步数/种子，以及一个 Comfy 设置入口。
 
 interface ComfyWorkbenchProps {
+  /** React 19：ref 作为普通 prop，暴露悬浮窗助手的读写句柄。 */
+  ref?: Ref<WorkbenchAssistantHandle>;
   isAuthenticated: boolean;
   selectedModel: string;
   chatModels: ChatModel[];
@@ -69,8 +77,6 @@ const ratioPresets = [
   { label: "3:2", width: 3, height: 2 },
   { label: "16:9", width: 16, height: 9 },
   { label: "9:16", width: 9, height: 16 },
-  { label: "2:3", width: 2, height: 3 },
-  { label: "3:4", width: 3, height: 4 },
 ];
 
 const resolutionOptions = [
@@ -204,6 +210,10 @@ function greatestCommonDivisor(a: number, b: number): number {
   return x || 1;
 }
 
+function formatRatioLabel(ratio: RatioValue): string {
+  return `${ratio.width}:${ratio.height}`;
+}
+
 function normalizeRatio(width: number, height: number): RatioValue {
   const safeWidth = Math.max(1, Math.min(Math.round(width || 1), 99));
   const safeHeight = Math.max(1, Math.min(Math.round(height || 1), 99));
@@ -323,6 +333,7 @@ function formatElapsed(seconds: number): string {
 }
 
 export default function ComfyWorkbench({
+  ref,
   isAuthenticated,
   selectedModel,
   chatModels,
@@ -364,6 +375,10 @@ export default function ComfyWorkbench({
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRestoringTask, setIsRestoringTask] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  // 显卡锁冲突：提交前发现别的任务在占显卡时弹窗，用户可等它完成或终止它。
+  const [gpuBusy, setGpuBusy] = useState<GpuLockHolder | null>(null);
+  const [isTerminatingGpu, setIsTerminatingGpu] = useState(false);
+  const skipGpuCheckRef = useRef(false);
   const [comfyStatus, setComfyStatus] = useState<ComfyStatus | null>(null);
   const [isCheckingComfy, setIsCheckingComfy] = useState(false);
   const [issueReport, setIssueReport] = useState<ComfyLogReport | null>(null);
@@ -971,6 +986,30 @@ export default function ComfyWorkbench({
     setSeedValue(value.replace(/\D/g, "").slice(0, 12));
   };
 
+  /**
+   * 锁冲突弹窗：终止占用者后重新提交（这次跳过锁预检）。
+   * 终止没成功（对方还在收尾）就保持弹窗，让用户再试或改为等待。
+   */
+  const handleTerminateGpuHolder = async () => {
+    setIsTerminatingGpu(true);
+    try {
+      const result = await terminateGpuHolder();
+      addToast(result.reason, result.terminated ? "success" : "info");
+      if (result.terminated) {
+        setGpuBusy(null);
+        skipGpuCheckRef.current = true;
+        await handleGenerate();
+      } else {
+        const holder = await fetchGpuStatus().catch(() => null);
+        setGpuBusy(holder);
+      }
+    } catch (error: any) {
+      addToast(error?.message || "终止占用者失败", "error");
+    } finally {
+      setIsTerminatingGpu(false);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!requireLogin("register")) return;
     if (!prompt.trim()) {
@@ -1000,6 +1039,18 @@ export default function ComfyWorkbench({
       addToast("ComfyUI 未运行，请先在 Comfy 设置里启动", "info");
       setShowSettings(true);
       return;
+    }
+
+    // 显卡被别的任务占着（TTS 合成/预加载，或另一条生图任务）时先弹窗：
+    // 等它完成，或终止它再提交（等价后端 GPU 锁的「终止对方并继续」）。
+    if (skipGpuCheckRef.current) {
+      skipGpuCheckRef.current = false;
+    } else {
+      const holder = await fetchGpuStatus().catch(() => null);
+      if (holder) {
+        setGpuBusy(holder);
+        return;
+      }
     }
 
     const resolvedSizeCode = sizeCodeFromRatio(ratio, resolutionCode);
@@ -1119,11 +1170,7 @@ export default function ComfyWorkbench({
     setIsHelping(true);
     setHelperDraft("");
     try {
-      const reply = await chatWithAI(
-        `请把下面这段画面描述改写成更适合 Qwen-Image 2.1 出图的中文提示词，保留主体与风格，只输出改写后的提示词：\n\n${prompt}`,
-        [],
-        selectedModel,
-      );
+      const reply = await expandPromptWithAI(prompt, selectedModel);
       setHelperDraft(reply.trim());
     } catch (error: any) {
       if (error instanceof AuthRequiredError) {
@@ -1135,6 +1182,51 @@ export default function ComfyWorkbench({
       setIsHelping(false);
     }
   };
+
+  // 悬浮窗助手联动：读当前输入做上下文快照；结构化回填把整份参数计划写入表单。
+  useImperativeHandle(ref, () => ({
+    getAssistantState: () => ({
+      scene: "image" as const,
+      generation_mode: generationMode,
+      snapshot: [
+        `板块：ComfyUI 本地生图（模型 ${comfyModel}）`,
+        `模式：${generationMode === "image_to_image" ? "图生图（参考图已上传）" : "文生图"}`,
+        prompt.trim() ? `当前创作描述：${prompt.trim().slice(0, 600)}` : "创作描述：空",
+        negativePrompt.trim() ? `当前负面描述：${negativePrompt.trim().slice(0, 300)}` : "",
+        `当前画面参数：比例 ${formatRatioLabel(ratio)} · 分辨率 ${resolutionCode}`,
+      ].filter(Boolean).join("\n"),
+    }),
+    applyAssistantFill: (fill) => {
+      if (fill.prompt?.trim()) setPrompt(fill.prompt.trim());
+      if (fill.negative_prompt?.trim()) setNegativePrompt(fill.negative_prompt.trim());
+      if (fill.ratio?.trim()) {
+        const match = /^(\d{1,2})\s*[:：]\s*(\d{1,2})$/.exec(fill.ratio.trim());
+        if (match) {
+          const width = Number(match[1]);
+          const height = Number(match[2]);
+          if (width > 0 && height > 0) handlePresetRatioSelect({ width, height });
+        }
+      }
+      if (fill.resolution === "1k" || fill.resolution === "2k") setResolutionCode(fill.resolution);
+    },
+    matchesAssistantFill: (fill) => {
+      if (fill.prompt?.trim() && prompt.trim() !== fill.prompt.trim()) return false;
+      if (fill.negative_prompt?.trim() && negativePrompt.trim() !== fill.negative_prompt.trim()) return false;
+      if (fill.ratio?.trim()) {
+        const match = /^(\d{1,2})\s*[:：]\s*(\d{1,2})$/.exec(fill.ratio.trim());
+        if (match) {
+          const width = Number(match[1]);
+          const height = Number(match[2]);
+          if (width > 0 && height > 0) {
+            const normalized = normalizeRatio(width, height);
+            if (ratio.width !== normalized.width || ratio.height !== normalized.height) return false;
+          }
+        }
+      }
+      if ((fill.resolution === "1k" || fill.resolution === "2k") && resolutionCode !== fill.resolution) return false;
+      return true;
+    },
+  }), [prompt, negativePrompt, generationMode, comfyModel, ratio, resolutionCode]);
 
   const isWorking = isGenerating || runningStatuses.includes(taskStatus);
   const hasTerminalState = terminalStatuses.includes(taskStatus) && !previewUrl;
@@ -1157,12 +1249,14 @@ export default function ComfyWorkbench({
     return parts.length ? `当前占用 ${parts.join(" · ")}` : "";
   })();
   const aspectRatio = getAspectRatioFromSizeCode(sizeCodeFromRatio(ratio, resolutionCode));
+  // 竖向比例（<1）时容器宽度由「可用高度 × 比例」反推：锁 w-full + max-h 截断会把 9:16 压成近方形。
   const frameMaxWidthClass = aspectRatio >= 1.15 ? "max-w-4xl" : aspectRatio <= 0.88 ? "max-w-xl" : "max-w-2xl";
   const frameStyle = previewSize
     ? { aspectRatio: `${previewSize.width} / ${previewSize.height}`, maxHeight: "62vh" }
     : aspectRatio
       ? { aspectRatio: `${aspectRatio}`, maxHeight: "62vh" }
       : undefined;
+  const portraitFrameMaxWidth = `min(100%, calc(62vh * ${aspectRatio}))`;
 
   return (
     <div className="bg-[#f7f7f4] lg:h-[calc(100vh-4rem)] lg:overflow-hidden">
@@ -1651,7 +1745,10 @@ export default function ComfyWorkbench({
             </div>
 
             <div className="grid min-h-[300px] flex-1 place-items-center rounded-[2rem] border border-black/5 bg-white/70 p-4 shadow-sm backdrop-blur sm:min-h-[380px] lg:min-h-0">
-              <div className={`w-full ${frameMaxWidthClass}`}>
+              <div
+                className={`w-full ${frameMaxWidthClass}`}
+                style={aspectRatio < 1 ? { maxWidth: portraitFrameMaxWidth } : undefined}
+              >
                 <div
                   className="relative mx-auto flex max-h-[62vh] w-full items-center justify-center overflow-hidden rounded-[1.5rem] border border-gray-100 bg-gray-50 shadow-2xl"
                   style={frameStyle}
@@ -1749,6 +1846,7 @@ export default function ComfyWorkbench({
                     {previewUrl && (
                       <a
                         href={downloadUrl || previewUrl}
+                        download
                         className="rounded-xl border border-gray-100 bg-white px-3 py-2 text-xs font-bold text-gray-600 transition hover:border-gray-200 hover:text-black"
                       >
                         下载原图
@@ -1764,6 +1862,16 @@ export default function ComfyWorkbench({
       </div>
 
       <AnimatePresence>
+        {/* 显卡锁冲突：等对方完成，或终止对方再提交 */}
+        {gpuBusy && (
+          <GpuBusyDialog
+            holder={gpuBusy}
+            taskLabel="生图任务"
+            terminating={isTerminatingGpu}
+            onCancel={() => setGpuBusy(null)}
+            onTerminate={() => void handleTerminateGpuHolder()}
+          />
+        )}
         {showSettings && (
           <ComfySettingsModal
             onClose={() => setShowSettings(false)}

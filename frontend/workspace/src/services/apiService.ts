@@ -69,6 +69,8 @@ export interface GenerationPayload {
   reference_image_name?: string;
   reference_image_data_url?: string;
   reference_upload_token?: string;
+  /** 图生图多参考图：主参考图 + 追加参考图的 token 列表（本地模式任务通道支持；线上单张）。 */
+  reference_upload_tokens?: string[];
   topic_id?: number;
   client_request_id?: string;
   wait_seconds?: number;
@@ -420,6 +422,35 @@ export async function fetchChatModels(): Promise<ChatModel[]> {
   return apiRequest<ChatModel[]>("/api/chat/models");
 }
 
+/**
+ * 「AI 生成描述」按钮：把左侧创作描述扩写成规范提示词。
+ * 走 Go 后端 /api/chat（线上）；system_prompt 与本地模式的通用提示词工程师
+ * 保持同一份契约（scripts/localapi/chat.mjs 的 CHAT_SYSTEM_PROMPT），避免两处漂移。
+ */
+export const PROMPT_ENGINEER_SYSTEM_PROMPT = [
+  "你是绘镜（Mirror Studio）的生图提示词工程师。",
+  "把用户给出的画面描述扩写成一段规范的中文创作描述：补齐主体细节、场景与氛围、光线、镜头语言（焦段/机位/景深）与质感词；",
+  "忠于用户的原始描述，不擅自增删主体或题材；只输出扩写后的描述本体，纯文本一段，不要代码块、标题或开场白。",
+  "所有人物必须明确是成年人；涉及未成年人的性化内容直接拒绝。",
+].join("");
+
+export async function expandPromptWithAI(
+  prompt: string,
+  channelCode: string = ""
+): Promise<string> {
+  const res = await apiRequest<{ reply: string }>("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      prompt: `请把下面这段画面描述扩写成规范提示词，只输出扩写后的描述：\n${prompt}`,
+      history: [],
+      channel_code: channelCode,
+      system_prompt: PROMPT_ENGINEER_SYSTEM_PROMPT,
+      temperature: 0.7,
+    }),
+  });
+  return res.reply;
+}
+
 // ── 对话中转站（仅本地开发者模式：工作台悬浮窗里配置；线上 Go 服务没有这些接口）──
 
 export type ChatReasoningEffort = "off" | "low" | "medium" | "high";
@@ -471,20 +502,25 @@ export async function fetchChatRelayModels(
   return res.models;
 }
 
+/** 消息内容：纯文本，或 OpenAI 兼容的多模态数组（text + image_url，读图用）。 */
+export type ChatMessageContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
+
 /**
  * 悬浮窗对话的流式接口：SSE 逐片回调，思考过程在 delta.reasoning_content。
- * 服务端会注入生图提示词工程师的 system prompt，这里只发 user/assistant 历史。
+ * context 携带当前板块（scene/mode/snapshot），服务端据此注入场景化 system prompt；
+ * 图片消息以多模态数组透传（模型需支持读图）。
  */
 export async function streamChat(
-  messages: { role: "user" | "assistant"; content: string }[],
+  messages: { role: "user" | "assistant"; content: ChatMessageContent }[],
   handlers: { onDelta?: (delta: { content?: string; reasoning?: string }) => void },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  context: { scene?: string; mode?: string; snapshot?: string } = {}
 ): Promise<void> {
   const res = await fetch("/api/chat/stream", {
     method: "POST",
     credentials: "same-origin",
     headers: getBaseHeaders(),
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, context }),
     signal,
   });
   if (!res.ok) {
@@ -1156,6 +1192,33 @@ export interface TtsInstance {
   idle_timeout_s: number | null;
 }
 
+/** 常驻保活状态：实例同引擎时用定期 start 顶住空闲超时，不重启已预热的实例。 */
+export interface TtsKeepAlive {
+  enabled: boolean;
+  engine: string;
+  interval_s: number;
+  started_at: string;
+  last_tick_at: string;
+  note: string;
+}
+
+/** 预加载（start）里的预热结果：ok=false + skipped 表示这次没预热（缺条件或显卡被占）。 */
+export interface TtsWarmupResult {
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  seconds?: number;
+  handle_s?: number | null;
+}
+
+export interface TtsStartResult {
+  engine: string;
+  slot: TtsInstance | null;
+  reused: boolean;
+  resident: boolean;
+  warmup: TtsWarmupResult;
+}
+
 export interface TtsStatus {
   enabled: boolean;
   cli: { python: string; script: string };
@@ -1163,6 +1226,7 @@ export interface TtsStatus {
   contract_version: string;
   engines: TtsEngineSpec[];
   instance: TtsInstance | null;
+  keep_alive: TtsKeepAlive;
   gpu: TtsGpuInfo | null;
   voices: TtsVoice[];
   gptsovits_voices: string[];
@@ -1236,8 +1300,8 @@ export async function fetchTtsStatus(): Promise<TtsStatus> {
   return apiRequest<TtsStatus>("/api/tts/status");
 }
 
-export async function startTtsEngine(payload: { engine: string; force?: boolean; switch?: boolean; keep_resident?: boolean }): Promise<{ engine: string; slot: TtsInstance | null }> {
-  return apiRequest<{ engine: string; slot: TtsInstance | null }>("/api/tts/start", {
+export async function startTtsEngine(payload: { engine: string; force?: boolean; switch?: boolean; keep_resident?: boolean; warmup?: boolean }): Promise<TtsStartResult> {
+  return apiRequest<TtsStartResult>("/api/tts/start", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -1255,8 +1319,30 @@ export async function releaseComfyMemory(): Promise<{ released: boolean; running
   return apiRequest<{ released: boolean; running?: boolean; reason: string; holder?: { owner: string; label: string } | null }>("/api/comfy/release", { method: "POST" });
 }
 
-export async function fetchGpuStatus(): Promise<{ owner: string; label: string; held_for_ms: number; waiting: number } | null> {
-  return apiRequest<{ owner: string; label: string; held_for_ms: number; waiting: number } | null>("/api/gpu/status");
+/** 显卡锁持有者（本机 8G 显存互斥）：ref 是占用者的任务号，终止接口据此精确取消。 */
+export interface GpuLockHolder {
+  owner: string;
+  label: string;
+  ref?: string;
+  held_for_ms: number;
+  waiting: number;
+}
+
+export interface GpuTerminateResult {
+  terminated: boolean;
+  holder: GpuLockHolder | null;
+  action: string;
+  waited_ms: number;
+  reason: string;
+}
+
+export async function fetchGpuStatus(): Promise<GpuLockHolder | null> {
+  return apiRequest<GpuLockHolder | null>("/api/gpu/status");
+}
+
+/** 终止当前占用显卡的任务（锁冲突弹窗里的「终止对方并继续」）。 */
+export async function terminateGpuHolder(): Promise<GpuTerminateResult> {
+  return apiRequest<GpuTerminateResult>("/api/gpu/terminate", { method: "POST" });
 }
 
 export async function fetchTtsLog(engine: string, lines = 60): Promise<{ engine: string; text: string }> {

@@ -605,6 +605,8 @@ async function fetchOutputImages(entry) {
 
 /**
  * 执行一次 ComfyUI 生图。
+ * shouldAbort：轮询期间每次 tick 调一次，返回 true（任务被取消/终止）就立刻抛出退出，
+ * 让调用方及时释放 GPU 锁，而不是干等到超时。
  * @returns {{buffer: Buffer, mimeType: string, source: string, requestId: string, width: number, height: number}}
  */
 export async function generateWithComfy({
@@ -615,8 +617,10 @@ export async function generateWithComfy({
   steps = null,
   seed = null,
   reference = null,
+  references = null,
   onProgress = null,
   onPromptId = null,
+  shouldAbort = null,
 }) {
   const status = await comfyStatus();
   if (!status.running) {
@@ -629,9 +633,17 @@ export async function generateWithComfy({
   const chosenSeed = Number.isFinite(seed) && seed > 0 ? Math.floor(seed) : randomSeed();
 
   const referenceNames = [];
-  if (reference?.file) {
+  // references 数组（多张）优先；reference 单张向后兼容。
+  const referenceList = Array.isArray(references) && references.length
+    ? references
+    : reference?.file
+      ? [reference]
+      : [];
+  if (referenceList.length) {
     onProgress?.(20);
-    referenceNames.push(await uploadReferenceImage(reference));
+    for (const item of referenceList.slice(0, MAX_REFERENCE_IMAGES)) {
+      referenceNames.push(await uploadReferenceImage(item));
+    }
   }
 
   const workflow = buildComfyWorkflow({
@@ -681,6 +693,10 @@ export async function generateWithComfy({
   let entry = null;
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
+    if (shouldAbort?.()) {
+      // 任务已被取消/终止：ComfyUI 侧已经从队列删除并打断，这里直接收尾。
+      throw new ComfyError('任务已取消');
+    }
     try {
       const response = await fetchWithTimeout(`${COMFY.baseURL}/history/${promptId}`, {}, 8000);
       if (response.ok) {

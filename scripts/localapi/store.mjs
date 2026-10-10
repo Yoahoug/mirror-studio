@@ -227,6 +227,14 @@ const MIME_EXTENSIONS = {
   'image/gif': '.gif',
   'application/epub+zip': '.epub',
   'application/octet-stream': '.bin',
+  'audio/wav': '.wav',
+  'audio/x-wav': '.wav',
+  'audio/mpeg': '.mp3',
+  'audio/mp4': '.m4a',
+  'audio/x-m4a': '.m4a',
+  'audio/ogg': '.ogg',
+  'audio/flac': '.flac',
+  'audio/x-flac': '.flac',
 };
 
 export function extensionFor(mimeType, filename = '') {
@@ -234,6 +242,21 @@ export function extensionFor(mimeType, filename = '') {
   if (fromMime) return fromMime;
   const fromName = path.extname(filename || '');
   return fromName || '.bin';
+}
+
+/**
+ * 下载时给浏览器建议的文件名。早期落库的音频记录没有扩展名（按 mime 表兜底成了
+ * `.bin`），这里按 mime 修正，避免用户下载到「xxx.bin」这种没法直接播放的文件。
+ */
+export function mediaDownloadName(media) {
+  const raw = String(media?.name || 'file');
+  const wanted = extensionFor(media?.mime_type, raw);
+  const current = path.extname(raw);
+  if (current.toLowerCase() === wanted.toLowerCase()) return raw;
+  if (!current || current.toLowerCase() === '.bin') {
+    return `${current ? raw.slice(0, -current.length) : raw}${wanted}`;
+  }
+  return raw;
 }
 
 /**
@@ -270,5 +293,5 @@ export function mediaByToken(token) {
 export function downloadURL(token, {preview = false, download = false} = {}) {
   if (!token) return '';
   const query = preview ? '?preview=1' : download ? '?download=1' : '';
-  return `/downloads/${token}/${query}`;
+  return `/downloads/${token}${query}`;
 }

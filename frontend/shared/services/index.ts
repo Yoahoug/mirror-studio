@@ -5,6 +5,7 @@ export * from './generation';
 export * from './upload';
 export * from './comfy';
 export * from './tts';
+export * from './download';
 export * from './novelviz';
 export * from './chat';
 export * from './console';
