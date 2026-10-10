@@ -21,7 +21,7 @@ export function nowIso() {
 function defaultStore() {
   return {
     version: STORE_VERSION,
-    counters: {media: 0, task: 0, image: 0, event: 0, novelTask: 0, book: 0, upload: 0, channel: 0, user: 0},
+    counters: {media: 0, task: 0, image: 0, event: 0, novelTask: 0, book: 0, upload: 0, channel: 0, user: 0, ttsTask: 0},
     users: [],
     quota: {},
     tasks: [],
@@ -30,9 +30,20 @@ function defaultStore() {
     uploadSessions: {},
     books: [],
     novelTasks: [],
+    ttsTasks: [],
     channels: [],
     config: {},
     events: {},
+    // 工作台里配置的对话中转站（悬浮窗对话 → 设置）。
+    // 密钥只留在本机这个文件里；/api/chat/config 只回掩码。
+    chat: {
+      base_url: '',
+      api_key: '',
+      model: '',
+      reasoning_effort: 'high',
+      temperature: 0.9,
+      custom_instruction: '',
+    },
   };
 }
 

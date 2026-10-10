@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
+  AlertTriangle,
+  AudioLines,
   Clock,
   Download,
   Eye,
@@ -19,6 +21,8 @@ import {
   cancelTask,
   deleteNovelTask,
   deleteGenerationTask,
+  deleteTtsTask,
+  cancelTtsTask,
   fetchImageDownloadUrl,
   fetchTasks,
   retryNovelTask,
@@ -63,8 +67,18 @@ function isNovelTask(task: GenerationTask) {
   return task.task_kind === "novelviz" || task.generation_mode === "novel_visualization" || task.task_no.startsWith("novelviz:");
 }
 
-// Comfy 任务（仅本地模式）点开后要回到「Comfy 生图」板块，用前缀和小说任务走同一套约定。
+function isTtsTask(task: GenerationTask) {
+  return task.task_kind === "tts" || task.task_no.startsWith("tts:");
+}
+
+// 本地零配置渠道出的是渐变占位图（不是真实生图结果），本地 API 会在任务里带 placeholder 标记。
+function isPlaceholderTask(task: GenerationTask) {
+  return Boolean(task.placeholder) || task.channel_name === "本地占位生图";
+}
+
+// Comfy / TTS 任务（仅本地模式）点开后要回到对应板块，用前缀和小说任务走同一套约定。
 function taskOpenKey(task: GenerationTask) {
+  if (task.task_kind === "tts" || task.task_no.startsWith("tts:")) return task.task_no;
   return task.engine === "comfy" ? `comfy:${task.task_no}` : task.task_no;
 }
 
@@ -487,6 +501,10 @@ export default function HistorySpace({
 
   const openPreview = async (event: React.MouseEvent, task: GenerationTask) => {
     event.stopPropagation();
+    if (isTtsTask(task)) {
+      onOpenTask?.(taskOpenKey(task));
+      return;
+    }
     if (isNovelTask(task)) {
       setGallery(task);
       return;
@@ -507,6 +525,15 @@ export default function HistorySpace({
 
   const downloadImage = async (event: React.MouseEvent, task: GenerationTask) => {
     event.stopPropagation();
+    if (isTtsTask(task)) {
+      const audio = (task.outputs || []).find((output: any) => output.download_url) as any;
+      if (audio?.download_url) {
+        window.location.href = audio.download_url;
+      } else {
+        addToast?.("该 TTS 任务暂无可下载音频", "info");
+      }
+      return;
+    }
     if (isNovelTask(task)) {
       const image = firstImage(task);
       if (image?.download_url || image?.image_url) {
@@ -579,6 +606,26 @@ export default function HistorySpace({
 
   const deleteTask = async (event: React.MouseEvent, task: GenerationTask) => {
     event.stopPropagation();
+    if (isTtsTask(task)) {
+      const realTaskNo = task.task_no.replace(/^tts:/, "");
+      const isActiveTask = ["queued", "running"].includes(task.status);
+      const confirmed = window.confirm(
+        isActiveTask ? "该 TTS 任务仍在执行，删除前会先终止。确认继续吗？" : "确认删除这条 TTS 历史记录？",
+      );
+      if (!confirmed) return;
+      try {
+        if (isActiveTask) {
+          await cancelTtsTask(realTaskNo);
+        }
+        await deleteTtsTask(realTaskNo);
+        setTasks((current) => current.filter((item) => item.task_no !== task.task_no));
+        setPagination((current) => current ? { ...current, total: Math.max(current.total - 1, 0) } : current);
+        addToast?.("TTS 历史记录已删除");
+      } catch (error: any) {
+        addToast?.(error.message || "删除失败", "error");
+      }
+      return;
+    }
     if (isNovelTask(task)) {
       const confirmed = window.confirm("确认删除这条小说可视化历史？删除后图集也会从历史中移除。");
       if (!confirmed || !task.novel_task_id) return;
@@ -721,7 +768,21 @@ export default function HistorySpace({
                       className="group cursor-pointer overflow-hidden rounded-[1.75rem] border border-gray-100 bg-white shadow-sm transition hover:-translate-y-1 hover:border-gray-200 hover:shadow-xl hover:shadow-black/5"
                     >
                       <div className="relative aspect-[4/3] bg-gray-50">
-                        {previewUrl ? (
+                        {isTtsTask(task) ? (
+                          <div className="flex h-full flex-col items-center justify-center gap-3 bg-[radial-gradient(circle_at_30%_20%,#ffffff,transparent_32%),linear-gradient(135deg,#f8fafc,#eceff3)] px-4 text-center">
+                            <div className="grid h-14 w-14 place-items-center rounded-3xl bg-white shadow-sm">
+                              <AudioLines className="h-6 w-6 text-gray-300" />
+                            </div>
+                            {(() => {
+                              const audio = ((task as any).outputs || []).find((output: any) => output.preview_url) as any;
+                              return audio?.preview_url ? (
+                                <audio controls preload="none" src={audio.preview_url} className="w-full max-w-[240px]" onClick={(event) => event.stopPropagation()} />
+                              ) : (
+                                <span className="text-[11px] font-bold text-gray-400">{statusText[task.status] || task.status}</span>
+                              );
+                            })()}
+                          </div>
+                        ) : previewUrl ? (
                           <img
                             src={previewUrl}
                             alt={task.prompt || task.task_no}
@@ -735,10 +796,20 @@ export default function HistorySpace({
                             <ImageIcon className="h-10 w-10" />
                           </div>
                         )}
+                        {isPlaceholderTask(task) && !isTtsTask(task) && (
+                          <div className="pointer-events-none absolute bottom-3 left-3 inline-flex items-center gap-1 rounded-full bg-amber-500/95 px-2.5 py-1 text-[10px] font-black text-white shadow-sm">
+                            <AlertTriangle className="h-3 w-3" />
+                            占位图
+                          </div>
+                        )}
                           <div className="absolute inset-x-0 top-0 flex items-start justify-between p-3 opacity-0 transition group-hover:opacity-100">
-                            <div className="rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-gray-700 shadow-sm backdrop-blur">
-                            {isNovelTask(task) ? (task.scene_mode === "targeted" ? "指定剧情" : "小说图集") : statusText[task.status] || task.status}
-                            </div>
+                          <div className="rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-gray-700 shadow-sm backdrop-blur">
+                            {isTtsTask(task)
+                              ? `TTS · ${String((task as any).engine || "").replace("qwen-", "Qwen ").replace("megatts3", "MegaTTS3") || "语音"}`
+                              : isNovelTask(task)
+                                ? (task.scene_mode === "targeted" ? "指定剧情" : "小说图集")
+                                : statusText[task.status] || task.status}
+                          </div>
                           <div className="flex gap-2">
                             {isRetryableNovelTask(task) && (
                               <button
@@ -784,6 +855,11 @@ export default function HistorySpace({
                           <div className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words pr-1 text-[15px] font-black leading-7 text-gray-950">
                             {task.prompt || task.task_no}
                           </div>
+                          {isTtsTask(task) && (
+                            <div className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-600">
+                              TTS 语音合成 · {String((task as any).mode) === "design" ? "音色设计" : String((task as any).mode) === "say" ? "音色复用" : String((task as any).mode) === "clone" ? "声音克隆" : "预设音色"}
+                            </div>
+                          )}
                           {isNovelTask(task) && (
                             <div className="mt-2 inline-flex rounded-full bg-[#6d5dfc]/10 px-2.5 py-1 text-[11px] font-black text-[#6d5dfc]">
                               小说可视化 · 工作台
@@ -804,6 +880,13 @@ export default function HistorySpace({
                           </div>
                         </div>
 
+                        {isPlaceholderTask(task) && !isTtsTask(task) && (
+                          <div className="mt-3 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-bold leading-5 text-amber-700">
+                            {isNovelTask(task)
+                              ? "占位图：未配置生图渠道，场景图是本地合成的渐变示意图，不是真实生图结果。"
+                              : "占位图：未配置生图渠道，图片是本地合成的渐变示意图（不含画面内容），不是真实生图结果。"}
+                          </div>
+                        )}
                         {task.error_message && (
                           <div className="mt-4 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-3 text-xs leading-6 text-rose-700">
                             {task.error_message}
@@ -815,7 +898,11 @@ export default function HistorySpace({
                             <Clock className="h-3 w-3" />
                             <span>{formatTime(task.submitted_at)}</span>
                           </div>
-                          <span>{task.images?.filter((image) => image.status === "available").length || task.images?.length || 0} 张图片</span>
+                          <span>
+                            {isTtsTask(task)
+                              ? `${((task as any).outputs || []).length || 0} 条音频`
+                              : `${task.images?.filter((image) => image.status === "available").length || task.images?.length || 0} 张图片`}
+                          </span>
                         </div>
                       </div>
                     </motion.article>

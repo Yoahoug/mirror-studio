@@ -1,9 +1,10 @@
 import { motion, AnimatePresence } from "motion/react";
-import { 
-  LayoutGrid, 
-  History, 
+import {
+  LayoutGrid,
+  History,
   Film,
   Cpu,
+  AudioLines,
   Sparkles,
   PanelLeftClose,
   PanelLeftOpen,
@@ -21,13 +22,16 @@ interface SidebarProps {
   releaseVersion?: string;
   /** 仅本地开发者模式（data-mode="local"）为 true：显示「Comfy 生图」板块入口。 */
   showComfy?: boolean;
+  /** 仅本地开发者模式（data-mode="local"）为 true：显示「TTS 语音合成」板块入口。 */
+  showTts?: boolean;
   t: any;
 }
 
-export default function Sidebar({ activeTab, setActiveTab, isCollapsed, setIsCollapsed, onNewConversation, onOpenNovelVisualization, releaseVersion, showComfy = false, t }: SidebarProps) {
+export default function Sidebar({ activeTab, setActiveTab, isCollapsed, setIsCollapsed, onNewConversation, onOpenNovelVisualization, releaseVersion, showComfy = false, showTts = false, t }: SidebarProps) {
   const menuItems = [
     { id: "create", label: t.create, icon: LayoutGrid },
     ...(showComfy ? [{ id: "comfy", label: t.comfy || "Comfy 生图", icon: Cpu }] : []),
+    ...(showTts ? [{ id: "tts", label: t.tts || "TTS 语音合成", icon: AudioLines }] : []),
     { id: "novelviz", label: t.novelviz || "小说可视化", icon: Film },
     { id: "new", label: t.newChat, icon: MessageSquarePlus, isAction: true },
     { id: "history", label: t.history, icon: History },
@@ -166,7 +170,7 @@ export default function Sidebar({ activeTab, setActiveTab, isCollapsed, setIsCol
       </motion.div>
 
       <div className="fixed inset-x-0 bottom-0 z-[70] border-t border-gray-200/80 bg-white/96 px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-2 shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur md:hidden">
-        <div className={`grid gap-2 ${menuItems.length > 4 ? "grid-cols-5" : "grid-cols-4"}`}>
+        <div className={`grid gap-2 ${menuItems.length > 5 ? "grid-cols-6" : menuItems.length > 4 ? "grid-cols-5" : "grid-cols-4"}`}>
           {menuItems.map((item) => {
             const active = !item.isAction && activeTab === item.id;
             return (

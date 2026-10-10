@@ -3,13 +3,14 @@
 //
 //   npm run local        # 一个端口（默认 8000）：/ 工作台，/admin 管理台
 //   npm run local:api    # 只跑本地 API（供 npm run dev:workspace / dev:console 代理）
-//   npm run local:check  # 接口自检（需要上面任一模式已在运行）
+//   npm run local:check  # 接口自检（默认自己起隔离实例，不写 local-data）
 //
 // 前端页面由 Vite 以 middleware 模式挂在这个进程的 HTTP 服务上：
 // HMR 的 WebSocket 也走同一个端口，所以对外只需要暴露一个地址。
 import http from 'node:http';
 
-import {DATA_DIR, HOST, IMAGE_SIZE, LLM, PORT, PROVIDER, STORE_FILE, llmConfigured, providerConfigured} from './config.mjs';
+import * as chatApi from './chat.mjs';
+import {DATA_DIR, HOST, IMAGE_SIZE, PORT, PROVIDER, STORE_FILE, providerConfigured, ttsConfigured, TTS} from './config.mjs';
 import * as comfyApi from './comfy.mjs';
 import {handleRequest, isApiPath, reportListenError} from './server.mjs';
 import {createLocalWebServer} from './web.mjs';
@@ -42,6 +43,7 @@ web = await createLocalWebServer(server);
 
 // 启动时探一次 ComfyUI：板块只有本地模式才存在，这里给个一眼可见的状态。
 const comfy = await comfyApi.comfyStatus();
+const chat = chatApi.chatConfigView();
 
 server.on('error', reportListenError);
 server.listen(PORT, HOST, () => {
@@ -54,8 +56,9 @@ server.listen(PORT, HOST, () => {
   console.log(`  本地 API      ${origin}/api/…`);
   console.log(`  数据目录      ${DATA_DIR}`);
   console.log(`  生图渠道      ${providerConfigured ? `真实渠道 ${PROVIDER.modelName}` : '本地占位图（零配置可用）'}`);
-  console.log(`  对话渠道      ${llmConfigured ? `真实渠道 ${LLM.modelName}` : '本地模拟回复（零配置可用）'}`);
+  console.log(`  对话渠道      ${chat.configured ? `真实渠道 ${chat.model}（${chat.base_url} · 思考等级 ${chat.reasoning_effort}）` : '本地模拟回复（工作台悬浮窗 → 设置里配置中转站）'}`);
   console.log(`  Comfy 生图    ${comfy.running ? `ComfyUI 运行中（${comfy.base_url}）` : `ComfyUI 未运行（${comfy.base_url}；在工作台「Comfy 生图」板块可一键启动）`}`);
+  console.log(`  TTS 语音      ${ttsConfigured ? `CLI 就绪（${TTS.cli}）` : `未找到 TTS CLI（${TTS.cli}；板块会显示引导）`}`);
   console.log(`  图片尺寸      ${IMAGE_SIZE}`);
   console.log('  ────────────────────────────────────────────────');
   console.log('  无数据库、无登录、无注册；删除 local-data/ 即可重置。');

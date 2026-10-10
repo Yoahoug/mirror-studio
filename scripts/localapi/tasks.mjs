@@ -5,6 +5,7 @@ import fs from 'node:fs';
 
 import {cancelComfyPrompt, findComfyModel, generateWithComfy} from './comfy.mjs';
 import {IMAGE_DELAY_MS, IMAGE_SIZE} from './config.mjs';
+import {acquireGpu, gpuLockHolder} from './gpu.mjs';
 import {generateImage} from './provider.mjs';
 import {consumeQuota, downloadURL, localUser, mediaByToken, newTaskNo, nextId, nowIso, persist, saveMedia, store} from './store.mjs';
 
@@ -183,64 +184,80 @@ async function run(taskNo) {
   if (!current || current.status === 'canceled') return;
 
   const reference = current.reference_token ? mediaByToken(current.reference_token) : null;
-  const result = isComfy
-    ? await generateWithComfy({
-        prompt: current.prompt,
-        negativePrompt: current.negative_prompt,
-        sizeCode: current.size_code,
-        model: current.comfy_model,
-        steps: current.steps,
-        seed: current.seed,
-        reference: reference ? {file: reference.file, mimeType: reference.mime_type, name: reference.name} : null,
-        onProgress: updateProgress,
-        onPromptId: (promptId) => {
-          const target = findTask(taskNo);
-          if (!target) return;
-          target.comfy_prompt_id = promptId;
-          persist();
-        },
-      })
-    : await generateImage({
-        prompt: current.prompt,
-        sizeCode: current.size_code,
-        qualityCode: current.quality_code,
-        negativePrompt: current.negative_prompt,
-        reference: reference
-          ? {dataURL: `data:${reference.mime_type};base64,${fs.readFileSync(reference.file).toString('base64')}`}
-          : null,
-      });
 
-  const finalTask = findTask(taskNo);
-  if (!finalTask || finalTask.status === 'canceled') return;
-
-  const mediaToken = saveMedia(result.buffer, {
-    mimeType: result.mimeType,
-    name: `generated-${finalTask.task_no}`,
-  });
-  const fallbackDimensions = parseDimensions(finalTask.size_code);
-  const [width, height] = Number.isFinite(result.width) && Number.isFinite(result.height)
-    ? [result.width, result.height]
-    : fallbackDimensions;
-  const imageId = nextId('image');
-  finalTask.images = [
-    {
-      id: imageId,
-      token: mediaToken,
-      status: 'available',
-      width,
-      height,
-      expires_at: null,
-    },
-  ];
-  finalTask.status = 'succeeded';
-  finalTask.progress_percent = 100;
-  finalTask.finished_at = nowIso();
-  finalTask.provider_request_id = result.requestId;
-  if (!finalTask.engine) {
-    finalTask.channel_name = result.source === 'provider' ? '真实渠道' : '本地占位生图';
+  // GPU 互斥：与 TTS 合成共用一块 8G 显存。占位图不需要 GPU，直接跳过。
+  let releaseGpu = null;
+  if (isComfy) {
+    releaseGpu = acquireGpu('comfy', `生图任务 ${taskNo}`);
+    if (!releaseGpu) {
+      const holder = gpuLockHolder();
+      throw new Error(`显卡正被${holder?.owner === 'tts' ? ' TTS 语音合成' : '其他生图任务'}占用（${holder?.label || ''}），请等它完成，或先在工作台里「释放内存」再提交。`);
+    }
   }
-  consumeQuota();
-  persist();
+
+  try {
+    const result = isComfy
+      ? await generateWithComfy({
+          prompt: current.prompt,
+          negativePrompt: current.negative_prompt,
+          sizeCode: current.size_code,
+          model: current.comfy_model,
+          steps: current.steps,
+          seed: current.seed,
+          reference: reference ? {file: reference.file, mimeType: reference.mime_type, name: reference.name} : null,
+          onProgress: updateProgress,
+          onPromptId: (promptId) => {
+            const target = findTask(taskNo);
+            if (!target) return;
+            target.comfy_prompt_id = promptId;
+            persist();
+          },
+        })
+      : await generateImage({
+          prompt: current.prompt,
+          sizeCode: current.size_code,
+          qualityCode: current.quality_code,
+          negativePrompt: current.negative_prompt,
+          reference: reference
+            ? {dataURL: `data:${reference.mime_type};base64,${fs.readFileSync(reference.file).toString('base64')}`}
+            : null,
+        });
+
+    const finalTask = findTask(taskNo);
+    if (!finalTask || finalTask.status === 'canceled') return;
+
+    const mediaToken = saveMedia(result.buffer, {
+      mimeType: result.mimeType,
+      name: `generated-${finalTask.task_no}`,
+    });
+    const fallbackDimensions = parseDimensions(finalTask.size_code);
+    const [width, height] = Number.isFinite(result.width) && Number.isFinite(result.height)
+      ? [result.width, result.height]
+      : fallbackDimensions;
+    const imageId = nextId('image');
+    finalTask.images = [
+      {
+        id: imageId,
+        token: mediaToken,
+        status: 'available',
+        width,
+        height,
+        expires_at: null,
+      },
+    ];
+    finalTask.status = 'succeeded';
+    finalTask.progress_percent = 100;
+    finalTask.finished_at = nowIso();
+    finalTask.provider_request_id = result.requestId;
+    if (!finalTask.engine) {
+      // 渠道名在出图拿到结果后才确定，「本地占位生图」= 零配置渐变占位图。
+      finalTask.channel_name = result.source === 'provider' ? '真实渠道' : '本地占位生图';
+    }
+    consumeQuota();
+    persist();
+  } finally {
+    releaseGpu?.();
+  }
 }
 
 function parseDimensions(sizeCode) {
@@ -320,6 +337,9 @@ export function serializeTask(task) {
     quality_code: task.quality_code,
     engine: task.engine || '',
     comfy_model: task.comfy_model || '',
+    // 渠道名 + 占位图标记：本地零配置渠道出的是渐变占位图，界面上要能认出来。
+    channel_name: task.channel_name || '',
+    placeholder: !task.engine && task.status === 'succeeded' && task.channel_name === '本地占位生图',
     steps: task.steps ?? null,
     seed: task.seed ?? null,
     reference_image_name: task.reference_image_name,

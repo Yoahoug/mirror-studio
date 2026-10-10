@@ -90,7 +90,13 @@ export interface ReferenceUploadResult {
   reference_image_attached: boolean;
 }
 
-export type UploadKind = "generation_reference_image" | "novel_epub";
+export interface TtsRefAudioUploadResult {
+  reference_upload_token: string;
+  reference_audio_name: string;
+  reference_audio_attached: boolean;
+}
+
+export type UploadKind = "generation_reference_image" | "novel_epub" | "tts_ref_audio";
 
 export interface UploadSession {
   upload_id: string;
@@ -117,7 +123,8 @@ export interface UploadProgress {
 
 export type CompletedUploadResult =
   | { kind: "generation_reference_image"; session: UploadSession; result: ReferenceUploadResult }
-  | { kind: "novel_epub"; session: UploadSession; result: NovelBook };
+  | { kind: "novel_epub"; session: UploadSession; result: NovelBook }
+  | { kind: "tts_ref_audio"; session: UploadSession; result: TtsRefAudioUploadResult };
 
 interface UploadFileResumableOptions {
   clientUploadId?: string;
@@ -413,16 +420,126 @@ export async function fetchChatModels(): Promise<ChatModel[]> {
   return apiRequest<ChatModel[]>("/api/chat/models");
 }
 
+// ── 对话中转站（仅本地开发者模式：工作台悬浮窗里配置；线上 Go 服务没有这些接口）──
+
+export type ChatReasoningEffort = "off" | "low" | "medium" | "high";
+
+export interface ChatProviderConfig {
+  base_url: string;
+  api_path: string;
+  model: string;
+  reasoning_effort: ChatReasoningEffort;
+  temperature: number;
+  custom_instruction: string;
+  configured: boolean;
+  source: "workbench" | "env" | "none";
+  has_key: boolean;
+  key_hint: string;
+  efforts: ChatReasoningEffort[];
+}
+
+export interface ChatProviderPatch {
+  base_url?: string;
+  model?: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+  reasoning_effort?: ChatReasoningEffort;
+  temperature?: number;
+  custom_instruction?: string;
+}
+
+export async function fetchChatConfig(): Promise<ChatProviderConfig> {
+  return apiRequest<ChatProviderConfig>("/api/chat/config");
+}
+
+/** 保存中转站配置；api_key 留空表示沿用已保存的密钥。 */
+export async function saveChatConfig(patch: ChatProviderPatch): Promise<ChatProviderConfig> {
+  return apiRequest<ChatProviderConfig>("/api/chat/config", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** 让服务端代问上游 /v1/models：测试连通 + 取模型清单（可带未保存的地址/密钥先试）。 */
+export async function fetchChatRelayModels(
+  input: { base_url?: string; api_key?: string } = {}
+): Promise<string[]> {
+  const res = await apiRequest<{ models: string[] }>("/api/chat/models", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return res.models;
+}
+
+/**
+ * 悬浮窗对话的流式接口：SSE 逐片回调，思考过程在 delta.reasoning_content。
+ * 服务端会注入生图提示词工程师的 system prompt，这里只发 user/assistant 历史。
+ */
+export async function streamChat(
+  messages: { role: "user" | "assistant"; content: string }[],
+  handlers: { onDelta?: (delta: { content?: string; reasoning?: string }) => void },
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: getBaseHeaders(),
+    body: JSON.stringify({ messages }),
+    signal,
+  });
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const payload = await res.json();
+      message = payload?.message || payload?.error || message;
+    } catch {
+      /* 保留 HTTP 状态文案 */
+    }
+    throw new Error(message);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("响应没有内容流");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let parsed: any;
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (typeof parsed?.error === "string" && parsed.error) throw new Error(parsed.error);
+      const delta = parsed?.choices?.[0]?.delta;
+      if (!delta) continue;
+      const reasoning = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+      const content = typeof delta.content === "string" ? delta.content : "";
+      if (reasoning || content) handlers.onDelta?.({ reasoning, content });
+    }
+  }
+}
+
 // ── Generation Tasks ──
 
 export interface GenerationTask {
   task_no: string;
-  task_kind?: "generation" | "novelviz";
+  task_kind?: "generation" | "novelviz" | "tts";
   novel_task_id?: number;
   status: string;
   progress_percent: number;
   generation_mode: "text_to_image" | "image_to_image" | "novel_visualization";
   prompt: string;
+  /** 仅 TTS 历史条目（task_kind="tts"）携带：合成产物音频列表。 */
+  outputs?: Array<{ id: string; name: string; kind: string; sr: number | null; duration_s: number | null; preview_url: string; download_url: string }>;
   negative_prompt?: string;
   style_code?: string;
   size_code?: string;
@@ -430,6 +547,9 @@ export interface GenerationTask {
   /** 仅本地开发者模式：engine="comfy" 表示任务由本机 ComfyUI 执行。 */
   engine?: string;
   comfy_model?: string;
+  /** 仅本地开发者模式：出图渠道名；placeholder=true 表示零配置渠道出的渐变占位图。 */
+  channel_name?: string;
+  placeholder?: boolean;
   steps?: number | null;
   seed?: number | null;
   reference_image_name?: string;
@@ -784,6 +904,11 @@ export function uploadFileResumable(
   file: File,
   options?: UploadFileResumableOptions,
 ): Promise<{ kind: "novel_epub"; session: UploadSession; result: NovelBook }>;
+export function uploadFileResumable(
+  kind: "tts_ref_audio",
+  file: File,
+  options?: UploadFileResumableOptions,
+): Promise<{ kind: "tts_ref_audio"; session: UploadSession; result: TtsRefAudioUploadResult }>;
 export async function uploadFileResumable(
   kind: UploadKind,
   file: File,
@@ -868,6 +993,9 @@ export async function uploadFileResumable(
   report("completed");
   if (kind === "generation_reference_image") {
     return { kind, session, result: result as ReferenceUploadResult };
+  }
+  if (kind === "tts_ref_audio") {
+    return { kind, session, result: result as TtsRefAudioUploadResult };
   }
   return { kind, session, result: result as NovelBook };
 }
@@ -975,6 +1103,185 @@ export async function startComfy(): Promise<ComfyStartResult> {
 
 export async function interruptComfy(): Promise<{ interrupted: boolean }> {
   return apiRequest<{ interrupted: boolean }>("/api/comfy/interrupt", { method: "POST" });
+}
+
+/** 让 ComfyUI 卸载模型、归还内存（出图后模型会一直驻留）。 */
+export async function freeComfyMemory(): Promise<{ freed: boolean; status: ComfyStatus }> {
+  return apiRequest<{ freed: boolean; status: ComfyStatus }>("/api/comfy/free", { method: "POST" });
+}
+
+// ── TTS（仅本地开发者模式：调 E:\AI\TTS CLI 契约，线上 Go 服务没有这些接口）──
+
+export interface TtsEngineSpec {
+  id: string;
+  label: string;
+  capabilities: string[];
+  model: string;
+  output_sr: number | Record<string, number> | null;
+  ref_audio: { min_s?: number | null; max_s?: number | null; hard?: boolean; recommended?: string; note?: string } | null;
+  speakers: string[] | null;
+  community_voices: string[] | null;
+  load_seconds_estimate: [number, number] | null;
+  init_params: Record<string, any>;
+  request_params: Record<string, any>;
+  notes: string[];
+  python_ok?: boolean | null;
+  running?: boolean;
+  note?: string;
+}
+
+export interface TtsVoice {
+  name: string;
+  source: string;
+  created_at: string;
+  instruct: string;
+  ref_text: string;
+  language: string;
+  protocol: string;
+  has_voice_pt: boolean;
+  audio_url: string;
+}
+
+export interface TtsGpuInfo {
+  name: string;
+  vram_total_mb: number;
+  vram_used_mb: number;
+}
+
+export interface TtsInstance {
+  engine: string;
+  pid: number | null;
+  started_at: string;
+  load_s: number | null;
+  idle_timeout_s: number | null;
+}
+
+export interface TtsStatus {
+  enabled: boolean;
+  cli: { python: string; script: string };
+  config: { timeout_ms: number; idle_timeout_seconds: number };
+  contract_version: string;
+  engines: TtsEngineSpec[];
+  instance: TtsInstance | null;
+  gpu: TtsGpuInfo | null;
+  voices: TtsVoice[];
+  gptsovits_voices: string[];
+  paths: Record<string, string> | null;
+  error: string;
+}
+
+export interface TtsOutput {
+  id: string;
+  name: string;
+  kind: string;
+  sr: number | null;
+  duration_s: number | null;
+  size: number | null;
+  audio_url: string;
+  preview_url: string;
+  download_url: string;
+}
+
+export interface TtsTask {
+  task_no: string;
+  task_kind: "tts";
+  status: "queued" | "running" | "succeeded" | "failed" | "canceled";
+  progress_percent: number;
+  mode: "design" | "say" | "clone" | "preset";
+  engine: string;
+  engine_label: string;
+  text: string;
+  instruct: string;
+  voice: string;
+  speaker: string;
+  language: string;
+  takes: number;
+  save_as: string;
+  ref_filename: string;
+  ref_text: string;
+  params: Record<string, any>;
+  outputs: TtsOutput[];
+  saved_voice: string;
+  warnings: string[];
+  timing: { handle_s?: number } | Record<string, number>;
+  load_s: number | null;
+  error_code: string;
+  error_message: string;
+  submitted_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface TtsSubmitPayload {
+  mode: "design" | "say" | "clone" | "preset";
+  text: string;
+  /** clone：qwen-base / gptsovits / indextts / megatts3；preset：qwen-preset / gptsovits */
+  engine?: string;
+  /** preset 别名，后端与 engine 等价 */
+  speaker_engine?: string;
+  instruct?: string;
+  voice?: string;
+  speaker?: string;
+  language?: string;
+  takes?: number;
+  save_as?: string;
+  ref_token?: string;
+  ref_text?: string;
+  ref_lang?: string;
+  params?: Record<string, string | number | boolean | number[]>;
+  switch?: boolean;
+}
+
+export async function fetchTtsStatus(): Promise<TtsStatus> {
+  return apiRequest<TtsStatus>("/api/tts/status");
+}
+
+export async function startTtsEngine(payload: { engine: string; force?: boolean; switch?: boolean; keep_resident?: boolean }): Promise<{ engine: string; slot: TtsInstance | null }> {
+  return apiRequest<{ engine: string; slot: TtsInstance | null }>("/api/tts/start", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function stopTts(): Promise<{ stopped: boolean }> {
+  return apiRequest<{ stopped: boolean }>("/api/tts/stop", { method: "POST" });
+}
+
+export async function releaseTtsMemory(): Promise<{ released: boolean; stopped?: boolean; reason: string; holder?: { owner: string; label: string } | null }> {
+  return apiRequest<{ released: boolean; stopped?: boolean; reason: string; holder?: { owner: string; label: string } | null }>("/api/tts/release", { method: "POST" });
+}
+
+export async function releaseComfyMemory(): Promise<{ released: boolean; running?: boolean; reason: string; holder?: { owner: string; label: string } | null }> {
+  return apiRequest<{ released: boolean; running?: boolean; reason: string; holder?: { owner: string; label: string } | null }>("/api/comfy/release", { method: "POST" });
+}
+
+export async function fetchGpuStatus(): Promise<{ owner: string; label: string; held_for_ms: number; waiting: number } | null> {
+  return apiRequest<{ owner: string; label: string; held_for_ms: number; waiting: number } | null>("/api/gpu/status");
+}
+
+export async function fetchTtsLog(engine: string, lines = 60): Promise<{ engine: string; text: string }> {
+  const search = new URLSearchParams({ engine, lines: String(lines) });
+  return apiRequest<{ engine: string; text: string }>(`/api/tts/log?${search.toString()}`);
+}
+
+export async function fetchTtsVoices(): Promise<{ voices: TtsVoice[]; gptsovits_voices: string[]; enabled: boolean }> {
+  return apiRequest<{ voices: TtsVoice[]; gptsovits_voices: string[]; enabled: boolean }>("/api/tts/voices");
+}
+
+export async function createTtsTask(payload: TtsSubmitPayload): Promise<TtsTask> {
+  return apiRequest<TtsTask>("/api/tts/tasks", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function fetchTtsTaskDetail(taskNo: string): Promise<TtsTask> {
+  return apiRequest<TtsTask>(`/api/tts/tasks/${encodeURIComponent(taskNo)}`);
+}
+
+export async function cancelTtsTask(taskNo: string): Promise<TtsTask> {
+  return apiRequest<TtsTask>(`/api/tts/tasks/${encodeURIComponent(taskNo)}/cancel`, { method: "POST" });
+}
+
+export async function deleteTtsTask(taskNo: string): Promise<void> {
+  await apiRequest<any>(`/api/tts/tasks/${encodeURIComponent(taskNo)}`, { method: "DELETE" });
 }
 
 // ── Novel Scene Visualization ──

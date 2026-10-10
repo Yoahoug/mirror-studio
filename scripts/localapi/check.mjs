@@ -1,10 +1,25 @@
-// 本地模式自检：参考图分片上传、图生图、EPUB 上传、小说可视化 SSE 全链路。
+// 本地模式自检：参考图分片上传、图生图、EPUB 上传、小说可视化 SSE、Comfy、TTS。
 // 只依赖 node 内置模块，直接 node scripts/localapi/check.mjs 运行。
+//
+// 默认自己起一个隔离实例：临时数据目录 + 空闲端口，自检产生的任务/图片/上传
+// 全部落在系统临时目录，跑完即删，不会污染 local-data 的工作台历史。
+// 想自检一个已经在跑的实例（会写它的数据），用：
+//   LOCAL_API_BASE=http://127.0.0.1:8000 npm run local:check
+import {spawn} from 'node:child_process';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import zlib from 'node:zlib';
 
 import {placeholderPNG} from './png.mjs';
 
-const BASE = process.env.LOCAL_API_BASE || 'http://127.0.0.1:8000';
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+let BASE = process.env.LOCAL_API_BASE || '';
+let isolatedChild = null;
+let isolatedDir = '';
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -157,16 +172,30 @@ async function checkReferenceUpload() {
   assert(image.headers.get('content-type') === 'image/png', `预览图可访问：${preview}`);
 }
 
-// ── 2. 对话 ──
+// ── 2. 对话（中转站配置 + 真实/模拟两条路）──
 async function checkChat() {
   console.log('\n[2] 对话接口');
+  const config = await api('/api/chat/config');
+  assert(config.body.code === 0, '读取对话渠道配置成功');
+  const chat = config.body.data;
+  assert(typeof chat.configured === 'boolean', `可判断是否已配置中转站（configured=${chat.configured}）`);
+  assert(
+    typeof chat.reasoning_effort === 'string' && Array.isArray(chat.efforts) && chat.efforts.includes(chat.reasoning_effort),
+    `思考等级可设置（当前 ${chat.reasoning_effort}，可选 ${(chat.efforts || []).join('/')}）`,
+  );
+  assert(typeof chat.has_key === 'boolean' && typeof chat.key_hint === 'string', '密钥只回掩码，不回原文');
+
   const reply = await api('/api/chat', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({prompt: '帮我写一条生图提示词', history: []}),
   });
   assert(reply.body.code === 0 && reply.body.data.reply.length > 0, '返回对话内容');
-  assert(reply.body.data.reply.includes('本地模拟回复'), '未配置渠道时明确标注本地模拟');
+  if (chat.configured) {
+    assert(!reply.body.data.reply.includes('本地模拟回复'), `回复来自真实中转站（${chat.model}）`);
+  } else {
+    assert(reply.body.data.reply.includes('本地模拟回复'), '未配置渠道时明确标注本地模拟');
+  }
 }
 
 // ── 3. EPUB 上传 + 小说可视化 ──
@@ -264,7 +293,7 @@ async function checkComfy() {
   assert(typeof data.running === 'boolean', `ComfyUI 运行状态可读（running=${data.running}）`);
   assert(typeof data.base_url === 'string' && data.base_url.length > 0, `ComfyUI 地址：${data.base_url}`);
   assert(
-    Array.isArray(data.models) && data.models.length === 3 && data.models.every((model) => model.id && model.label),
+    Array.isArray(data.models) && data.models.length >= 3 && data.models.every((model) => model.id && model.label),
     `模型清单包含 ${data.models?.length} 个模型（${data.models?.map((model) => model.id).join(', ')}）`,
   );
   assert(typeof data.start_command_configured === 'boolean', '启动命令配置状态可读');
@@ -280,17 +309,136 @@ async function checkComfy() {
   }
 }
 
-async function main() {
-  console.log(`本地模式自检：${BASE}`);
-  await checkReferenceUpload();
-  await checkChat();
-  await checkNovel();
-  await checkConsole();
-  await checkComfy();
-  console.log('\n全部自检通过 ✅');
+// ── 6. TTS 板块（本地专属接口；不做真实合成，只验证 CLI 探测与接口结构）──
+async function checkTts() {
+  console.log('\n[6] TTS 板块接口');
+  const status = await api('/api/tts/status');
+  assert(status.body.code === 0, '查询 TTS 状态成功');
+  const data = status.body.data;
+  assert(typeof data.enabled === 'boolean', `CLI 可用性可判断（enabled=${data.enabled}）`);
+  assert(Array.isArray(data.engines) && data.engines.length >= 5, `引擎元数据 ${data.engines?.length} 条（含 contract.json 的高级参数表）`);
+  assert(
+    data.engines.every((engine) => engine.id && Array.isArray(engine.capabilities)),
+    `引擎能力齐全（${data.engines?.map((engine) => engine.id).join(', ')}）`,
+  );
+  assert(Array.isArray(data.voices), `音色库可读（${data.voices?.length} 个音色）`);
+
+  const voices = await api('/api/tts/voices');
+  assert(voices.body.code === 0 && Array.isArray(voices.body.data.voices), '音色列表接口可用');
+  assert(Array.isArray(voices.body.data.gptsovits_voices), 'GPT-SoVITS 社区音色列表可读');
+
+  if (data.enabled) {
+    const log = await api('/api/tts/log?engine=qwen-base&lines=5');
+    // 没跑过该引擎时契约返回 E_NOT_FOUND，两种情况都算接口通了。
+    assert(
+      log.body.code === 0 || String(log.body.message).includes('日志'),
+      `日志接口可达（${log.body.code === 0 ? '有日志' : '暂无日志'}）`,
+    );
+    const qwenAudio = data.voices.find((voice) => voice.audio_url);
+    if (qwenAudio) {
+      const audio = await fetch(`${BASE}${qwenAudio.audio_url}`);
+      assert(audio.status === 200 || audio.status === 404, '音色试听路由可达');
+    }
+  }
+
+  const task = await api('/api/tts/tasks', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode: 'clone', text: '自检', engine: 'unknown-engine'}),
+  });
+  assert(task.body.code === 400, '非法引擎参数被拒绝（参数校验生效）');
+
+  const list = await api('/api/tts/tasks');
+  assert(list.body.code === 0 && Array.isArray(list.body.data.items), 'TTS 任务列表接口可用');
 }
 
-main().catch((error) => {
+async function main() {
+  if (!BASE) {
+    await startIsolatedServer();
+  }
+  console.log(`本地模式自检：${BASE}${isolatedChild ? '（隔离实例，临时数据目录，跑完即删）' : ''}`);
+  try {
+    await checkReferenceUpload();
+    await checkChat();
+    await checkNovel();
+    await checkConsole();
+    await checkComfy();
+    await checkTts();
+    console.log('\n全部自检通过 ✅');
+  } finally {
+    await stopIsolatedServer();
+  }
+}
+
+// ── 隔离实例：临时数据目录 + 空闲端口，让自检不碰 local-data ──
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      probe.close(() => resolve(address.port));
+    });
+  });
+}
+
+async function startIsolatedServer() {
+  const port = await freePort();
+  isolatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-local-check-'));
+  BASE = `http://127.0.0.1:${port}`;
+  isolatedChild = spawn(process.execPath, [path.join(HERE, 'server.mjs')], {
+    env: {
+      ...process.env,
+      LOCAL_API_HOST: '127.0.0.1',
+      LOCAL_API_PORT: String(port),
+      LOCAL_DATA_DIR: isolatedDir,
+      // 自检用最小模拟耗时，跑得快一点；占位图/模拟对话由零配置默认值决定。
+      LOCAL_IMAGE_DELAY_MS: '60',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  isolatedChild.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  isolatedChild.stdout.on('data', () => {}); // 排空子进程输出，避免管道写满阻塞
+  isolatedChild.on('exit', (code) => {
+    if (code && code !== 0) stderr += `\n[隔离实例退出码 ${code}]`;
+  });
+
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (isolatedChild.exitCode !== null) {
+      throw new Error(`隔离实例启动失败：${stderr.trim() || `退出码 ${isolatedChild.exitCode}`}`);
+    }
+    try {
+      const response = await fetch(`${BASE}/__local`);
+      if (response.ok) return;
+    } catch {
+      // 还没起来，继续等。
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`隔离实例 15 秒内没有就绪：${stderr.trim()}`);
+}
+
+async function stopIsolatedServer() {
+  if (isolatedChild && isolatedChild.exitCode === null) {
+    const exited = new Promise((resolve) => isolatedChild.once('exit', resolve));
+    isolatedChild.kill('SIGTERM');
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
+    if (isolatedChild.exitCode === null) isolatedChild.kill('SIGKILL');
+  }
+  isolatedChild = null;
+  if (isolatedDir) {
+    fs.rmSync(isolatedDir, {recursive: true, force: true});
+    isolatedDir = '';
+  }
+}
+
+main().catch(async (error) => {
   console.error(`\n自检失败 ❌ ${error.message}`);
+  await stopIsolatedServer();
   process.exitCode = 1;
 });

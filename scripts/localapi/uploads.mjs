@@ -3,10 +3,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import {CHUNK_SIZE, UPLOAD_DIR} from './config.mjs';
+import {CHUNK_SIZE, TTS, UPLOAD_DIR} from './config.mjs';
 import {nextId, nowIso, persist, saveMedia, store} from './store.mjs';
 
 export class UploadError extends Error {}
+
+const AUDIO_EXTENSIONS = /\.(wav|mp3|flac|m4a|ogg|opus|aac)$/i;
+
+function ttsAudioMime(filename, fallback = '') {
+  const extension = (filename.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
+  const table = {wav: 'audio/wav', mp3: 'audio/mpeg', flac: 'audio/flac', m4a: 'audio/mp4', ogg: 'audio/ogg', opus: 'audio/ogg', aac: 'audio/aac'};
+  return (extension && table[extension]) || fallback || 'audio/wav';
+}
 
 function sessionView(session) {
   return {
@@ -26,12 +34,18 @@ function sessionView(session) {
 
 export function createSession(payload) {
   const kind = String(payload.kind || '');
-  if (kind !== 'generation_reference_image' && kind !== 'novel_epub') {
+  if (kind !== 'generation_reference_image' && kind !== 'novel_epub' && kind !== 'tts_ref_audio') {
     throw new UploadError('不支持的上传类型');
   }
   const totalSize = Number.parseInt(payload.total_size, 10);
   if (!Number.isFinite(totalSize) || totalSize <= 0) {
     throw new UploadError('上传内容为空');
+  }
+  if (kind === 'tts_ref_audio') {
+    const maxBytes = TTS.maxRefAudioMb * 1024 * 1024;
+    if (totalSize > maxBytes) {
+      throw new UploadError(`参考音频超过 ${TTS.maxRefAudioMb}MB 上限`);
+    }
   }
   const clientUploadId = String(payload.client_upload_id || '');
 
@@ -141,6 +155,26 @@ export async function completeSession(uploadId) {
       reference_upload_token: token,
       reference_image_name: session.filename,
       reference_image_attached: true,
+    };
+  } else if (session.kind === 'tts_ref_audio') {
+    if (!AUDIO_EXTENSIONS.test(session.filename)) {
+      throw new UploadError('参考音频只支持 wav / mp3 / flac / m4a / ogg / opus / aac 格式');
+    }
+    const mediaToken = saveMedia(buffer, {
+      mimeType: ttsAudioMime(session.filename, session.content_type),
+      name: session.filename,
+    });
+    const token = `ttsref-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+    store.referenceUploads[token] = {
+      kind: 'tts_ref_audio',
+      mediaToken,
+      filename: session.filename,
+      created_at: nowIso(),
+    };
+    session.result = {
+      reference_upload_token: token,
+      reference_audio_name: session.filename,
+      reference_audio_attached: true,
     };
   } else {
     // EPUB 走和 /api/novelviz/books/upload 同一条登记路径，避免两份书表逻辑。

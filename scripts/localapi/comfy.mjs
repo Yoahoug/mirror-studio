@@ -49,6 +49,15 @@ export const COMFY_MODELS = [
     max_steps: 35,
   },
   {
+    id: 'turbo',
+    label: '官方 Turbo 8 步',
+    note: '官方 Turbo，固定 8 步日程，CFG 关闭（约 20 秒/张）',
+    unet: 'qwen-image-2.1-turbo-int8-convrot.safetensors',
+    steps_mode: 'fixed',
+    default_steps: null,
+    max_steps: null,
+  },
+  {
     id: 'uncensored',
     label: '无审查 NoctQ V4',
     note: '无审查模型，CFG 3，25 / 35 步可选',
@@ -65,6 +74,14 @@ const MODEL_SPECS = {
     encoder: '17',
     // 6 步这条链上 latent 有两个消费者：sigma 调度和采样器本体，都要换。
     latent_consumers: [['21', 'latent'], ['22', 'latent_image']],
+    sampler: null,
+  },
+  turbo: {
+    template: 'turbo-t2i.json',
+    encoder: '17',
+    // 与 6 步同族的自定义采样链，但 sigma 是纯日程（ManualSigmas）没有 latent 输入，
+    // 参考图只需要换采样器本体这一个消费者。
+    latent_consumers: [['22', 'latent_image']],
     sampler: null,
   },
   official: {
@@ -87,6 +104,34 @@ export function findComfyModel(modelId) {
 
 export function comfyModelList() {
   return COMFY_MODELS.map((model) => ({...model}));
+}
+
+/**
+ * 让 ComfyUI 卸载模型并归还内存（POST /free）。
+ * 出图后模型会一直驻留（编码器 8.9G + 主模型 6.9G + VAE 0.6G），
+ * 工作台的「释放内存」按钮与出图后的常驻提示都走这里。
+ */
+export async function freeComfyMemory() {
+  let response;
+  try {
+    response = await fetchWithTimeout(
+      `${COMFY.baseURL}/free`,
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({unload_models: true, free_memory: true}),
+      },
+      30000,
+    );
+  } catch (error) {
+    throw new ComfyError(`释放内存失败：${describeFetchError(error)}`);
+  }
+  if (!response.ok) {
+    throw new ComfyError(`释放内存失败（HTTP ${response.status}）`);
+  }
+  // 释放后再读一次状态，前端可以直接用返回里的新读数刷新显示。
+  const status = await comfyStatus();
+  return {freed: true, status};
 }
 
 // ── 工作流模板（随仓库版本化，运行时深拷贝后改写）──
@@ -432,6 +477,33 @@ export async function interruptComfy() {
     return {interrupted: response.ok};
   } catch {
     return {interrupted: false};
+  }
+}
+
+/**
+ * 释放内存按钮（Comfy 侧）：POST /free 卸载模型并清空显存缓存。
+ * ComfyUI 未运行时视为已释放；GPU 锁被占用时不执行（任务还在跑）。
+ */
+export async function releaseComfyMemory() {
+  const {gpuLockHolder} = await import('./gpu.mjs');
+  const holder = gpuLockHolder();
+  if (holder) {
+    return {released: false, running: true, reason: `有任务正在使用显卡（${holder.label || holder.owner}），完成后再释放。`, holder};
+  }
+  const status = await comfyStatus();
+  if (!status.running) {
+    return {released: true, running: false, reason: 'ComfyUI 未运行，显存已空闲。'};
+  }
+  try {
+    const response = await fetchWithTimeout(`${COMFY.baseURL}/free`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({unload_models: true, free_memory: true}),
+    }, 15000);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return {released: true, running: true, reason: '已请求 ComfyUI 卸载模型并释放显存。'};
+  } catch (error) {
+    return {released: false, running: true, reason: `释放失败：${error.message}（ComfyUI 可能正忙，稍后再试。）`};
   }
 }
 

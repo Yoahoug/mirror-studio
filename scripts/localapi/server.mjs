@@ -9,20 +9,20 @@ import http from 'node:http';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 
+import * as chatApi from './chat.mjs';
 import * as comfyApi from './comfy.mjs';
 import * as consoleApi from './console.mjs';
 import {
   DATA_DIR,
   HOST,
-  LLM,
   PORT,
   PROVIDER,
   STORE_FILE,
-  llmConfigured,
   providerConfigured,
 } from './config.mjs';
+import * as gpuApi from './gpu.mjs';
 import * as novelApi from './novel.mjs';
-import {chatReply} from './provider.mjs';
+import * as ttsApi from './tts.mjs';
 import {downloadURL, localUser, mediaByToken, persist, quotaView, store} from './store.mjs';
 import * as taskApi from './tasks.mjs';
 import * as uploadApi from './uploads.mjs';
@@ -236,17 +236,38 @@ route('POST', '/api/auth/logout', async (_req, res) => {
 });
 
 // ── 工作台：对话 ──
+//
+// 对话渠道（中转站/本机 LM Studio）由工作台的悬浮窗对话 → 设置里配置，
+// 存 local-data/store.json 的 chat 段；密钥只在本机，这里只回掩码。
+
+route('GET', '/api/chat/config', async (_req, res) => ok(res, chatApi.chatConfigView()));
+
+route('PUT', '/api/chat/config', async (req, res) => {
+  const payload = await readJSON(req);
+  return ok(res, chatApi.saveChatConfig(payload));
+});
+
+// 代理上游 /v1/models：设置面板的「获取模型列表 / 测试连通」。
+route('POST', '/api/chat/models', async (req, res) => {
+  const payload = await readJSON(req);
+  const models = await chatApi.listRelayModels({
+    baseUrl: payload.base_url,
+    apiKey: payload.api_key,
+  });
+  return ok(res, {models});
+});
 
 route('GET', '/api/chat/models', async (_req, res) => {
+  const config = chatApi.chatConfigView();
   const models = store.channels
     .filter((channel) => channel.channel_type === 'llm')
     .map((channel) => ({
       id: channel.id,
-      name: channel.name,
+      name: config.configured ? `${config.model} · 中转站` : '本地模拟对话（未配置）',
       channel_code: channel.channel_code,
-      provider_name: channel.provider_name,
-      model_name: llmConfigured ? LLM.modelName : channel.model_name,
-      configured: true,
+      provider_name: config.configured ? 'Relay' : channel.provider_name,
+      model_name: config.configured ? config.model : channel.model_name,
+      configured: config.configured,
     }));
   return ok(res, models);
 });
@@ -256,10 +277,39 @@ route('POST', '/api/chat', async (req, res) => {
   const prompt = String(payload.prompt || '').trim();
   if (!prompt) return fail(res, 400, '请输入对话内容', 400);
   try {
-    const reply = await chatReply({prompt, history: Array.isArray(payload.history) ? payload.history : []});
+    const reply = await chatApi.chatReply({prompt, history: Array.isArray(payload.history) ? payload.history : []});
     return ok(res, {reply});
   } catch (error) {
     return fail(res, 502, `对话渠道调用失败：${error.message}`, 502);
+  }
+});
+
+// 流式对话（悬浮窗对话用）：上游 SSE 原样透传，思考过程在 delta.reasoning_content。
+route('POST', '/api/chat/stream', async (req, res) => {
+  const payload = await readJSON(req);
+  const config = chatApi.resolveChatConfig();
+  const messages = chatApi.buildChatMessages(payload.messages, config.custom_instruction);
+  const controller = new AbortController();
+  req.on('close', () => controller.abort());
+  const upstream = await chatApi.openChatStream({messages, signal: controller.signal});
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+  try {
+    const reader = upstream.body.getReader();
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      res.write(Buffer.from(value));
+    }
+  } catch (error) {
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({error: String(error?.message || error)})}\n\n`);
+    }
+  } finally {
+    if (!res.writableEnded) res.end();
   }
 });
 
@@ -316,13 +366,88 @@ route('POST', '/api/comfy/start', async (_req, res) => ok(res, await comfyApi.st
 
 route('POST', '/api/comfy/interrupt', async (_req, res) => ok(res, await comfyApi.interruptComfy()));
 
+// 释放内存：让 ComfyUI 卸载模型（出图后模型会一直驻留，占内存/显存）
+route('POST', '/api/comfy/free', async (_req, res) => ok(res, await comfyApi.freeComfyMemory()));
+
+// ── TTS 语音合成（仅本地模式：调 E:\AI\TTS CLI 契约，线上 Go 服务没有这些接口）──
+
+route('GET', '/api/tts/status', async (_req, res) => ok(res, await ttsApi.ttsStatus()));
+
+route('POST', '/api/tts/start', async (req, res) => {
+  const payload = await readJSON(req);
+  return ok(res, await ttsApi.startTtsEngine({...payload, keepResident: payload.keep_resident === true}));
+});
+
+route('POST', '/api/tts/stop', async (_req, res) => ok(res, await ttsApi.stopTts()));
+
+// 「释放内存」按钮：TTS 停实例，Comfy 卸载模型；有任务在跑时会拒绝并返回占用者。
+route('POST', '/api/tts/release', async (_req, res) => ok(res, await ttsApi.releaseTtsResources()));
+
+route('POST', '/api/comfy/release', async (_req, res) => ok(res, await comfyApi.releaseComfyMemory()));
+
+route('GET', '/api/gpu/status', async (_req, res) => ok(res, gpuApi.describeGpuLock()));
+
+route('GET', '/api/tts/log', async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  return ok(res, await ttsApi.ttsLog({
+    engine: url.searchParams.get('engine') || '',
+    lines: Number.parseInt(url.searchParams.get('lines') || '60', 10) || 60,
+  }));
+});
+
+route('GET', '/api/tts/voices', async (_req, res) => ok(res, await ttsApi.ttsStatus().then((status) => ({
+  voices: status.voices,
+  gptsovits_voices: status.gptsovits_voices,
+  enabled: status.enabled,
+}))));
+
+route('GET', '/api/tts/voices/{name}/audio', async (_req, res, params) => {
+  const source = ttsApi.serveVoiceSource(params.name);
+  if (!fs.existsSync(source.file)) return fail(res, 404, '音色来源音频不存在', 404);
+  const buffer = fs.readFileSync(source.file);
+  res.writeHead(200, {
+    'Content-Type': source.mimeType,
+    'Content-Length': buffer.length,
+    'Content-Disposition': `inline; filename="${encodeURIComponent(source.name)}"`,
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(buffer);
+});
+
+route('GET', '/api/tts/tasks', async (_req, res) =>
+  ok(res, {items: [...store.ttsTasks].map((task) => ttsApi.serializeTtsTask(task))}));
+
+route('POST', '/api/tts/tasks', async (req, res) => {
+  const payload = await readJSON(req);
+  const task = ttsApi.createTtsTask(payload);
+  return ok(res, ttsApi.serializeTtsTask(task));
+});
+
+route('GET', '/api/tts/tasks/{taskNo}', async (_req, res, params) => {
+  const task = ttsApi.findTtsTask(params.taskNo);
+  if (!task) return fail(res, 404, '任务不存在', 404);
+  return ok(res, ttsApi.serializeTtsTask(task));
+});
+
+route('DELETE', '/api/tts/tasks/{taskNo}', async (_req, res, params) => {
+  if (!ttsApi.deleteTtsTask(params.taskNo)) return fail(res, 404, '任务不存在', 404);
+  return ok(res, {deleted: true});
+});
+
+route('POST', '/api/tts/tasks/{taskNo}/cancel', async (_req, res, params) => {
+  const task = ttsApi.cancelTtsTask(params.taskNo);
+  if (!task) return fail(res, 404, '任务不存在', 404);
+  return ok(res, ttsApi.serializeTtsTask(task));
+});
+
 route('GET', '/api/workspace/history', async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const page = Math.max(1, Number.parseInt(url.searchParams.get('page') || '1', 10));
   const pageSize = Math.max(1, Number.parseInt(url.searchParams.get('page_size') || '12', 10));
   const keyword = (url.searchParams.get('q') || '').trim().toLowerCase();
 
-  // 生图任务与小说任务共用一份历史列表，先合并排序再分页。
+  // 生图、小说与 TTS 任务共用一份历史列表，先合并排序再分页。
   const items = [
     ...store.tasks
       .filter((task) => (keyword ? task.prompt.toLowerCase().includes(keyword) : true))
@@ -330,6 +455,9 @@ route('GET', '/api/workspace/history', async (req, res) => {
     ...store.novelTasks
       .filter((task) => (keyword ? task.book_filename.toLowerCase().includes(keyword) : true))
       .map((task) => novelApi.historyItem(task)),
+    ...store.ttsTasks
+      .filter((task) => (keyword ? task.text.toLowerCase().includes(keyword) : true))
+      .map((task) => ttsApi.ttsHistoryItem(task)),
   ].sort((left, right) => String(right.submitted_at || '').localeCompare(String(left.submitted_at || '')));
 
   const total = items.length;
@@ -570,7 +698,7 @@ export function isApiPath(pathname) {
 
 route('GET', '/healthz', async (_req, res) => ok(res, {status: 'ok'}));
 
-function infoHTML({comfyLine}) {
+function infoHTML({comfyLine, chatLine, ttsLine}) {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -596,8 +724,9 @@ function infoHTML({comfyLine}) {
     </ul>
     <p>数据目录：<code>${DATA_DIR}</code>；图片：<code>${path.join(DATA_DIR, 'media')}</code>。</p>
     <p>生图渠道：${providerConfigured ? '<b>真实渠道</b>' : '本地占位图（未配置 PROVIDER_API_KEY）'}；
-       对话渠道：${llmConfigured ? '<b>真实渠道</b>' : '本地模拟回复（未配置 LLM_API_KEY）'}。</p>
+       对话渠道：${chatLine}。</p>
     <p>ComfyUI（工作台「Comfy 生图」板块）：${comfyLine}。</p>
+    <p>TTS（工作台「TTS 语音合成」板块）：${ttsLine}。</p>
   </main>
 </body>
 </html>`;
@@ -608,8 +737,18 @@ route('GET', '/__local', async (_req, res) => {
   const comfyLine = comfy.running
     ? `<b>运行中</b>（<code>${comfy.base_url}</code>${comfy.stats?.comfyui_version ? ` · ComfyUI ${comfy.stats.comfyui_version}` : ''}）`
     : `未运行（<code>${comfy.base_url}</code>）；可打开工作台的「Comfy 生图」板块点击启动`;
+  const chat = chatApi.chatConfigView();
+  const chatLine = chat.configured
+    ? `<b>真实渠道</b>（<code>${chat.base_url}</code> · ${chat.model} · 思考等级 ${chat.reasoning_effort}）`
+    : '本地模拟回复（在工作台右下角悬浮窗 →「设置」里配置中转站）';
+  const tts = await ttsApi.ttsStatus();
+  const ttsLine = tts.enabled
+    ? tts.instance
+      ? `<b>实例运行中</b>（${tts.instance.engine} · pid ${tts.instance.pid ?? '?'}），CLI <code>${tts.cli.script}</code>`
+      : `CLI 就绪（<code>${tts.cli.script}</code>），暂无运行实例`
+    : `未找到 TTS CLI（<code>${tts.cli.script}</code>）；本板块依赖 E:\\AI\\TTS 契约环境`;
   res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'});
-  res.end(infoHTML({comfyLine}));
+  res.end(infoHTML({comfyLine, chatLine, ttsLine}));
 });
 
 // ── 调度 ──
@@ -633,9 +772,12 @@ export async function handleRequest(req, res) {
         res.end();
         return true;
       }
-      const known = error instanceof ValidationError || error instanceof uploadApi.UploadError || error instanceof novelApi.NovelError || error instanceof comfyApi.ComfyError;
+      const known = error instanceof ValidationError || error instanceof uploadApi.UploadError || error instanceof novelApi.NovelError || error instanceof comfyApi.ComfyError || error instanceof ttsApi.TtsError;
       if (known) {
         fail(res, 400, error.message, 400);
+      } else if (error instanceof chatApi.ChatError) {
+        // 对话渠道的报错自带状态码：配置类 400，上游类 502。
+        fail(res, error.status || 400, error.message, error.status || 400);
       } else {
         console.error(`[local-api] ${req.method} ${pathname} 处理失败：`, error);
         fail(res, 500, error.message || '本地服务内部错误', 500);
@@ -676,7 +818,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(`  本地 API      http://${HOST}:${PORT}`);
     console.log(`  数据目录      ${DATA_DIR}`);
     console.log(`  生图渠道      ${providerConfigured ? `真实渠道 ${PROVIDER.modelName}` : '本地占位图（零配置可用）'}`);
-    console.log(`  对话渠道      ${llmConfigured ? `真实渠道 ${LLM.modelName}` : '本地模拟回复（零配置可用）'}`);
+    const chat = chatApi.chatConfigView();
+    console.log(`  对话渠道      ${chat.configured ? `真实渠道 ${chat.model}（思考等级 ${chat.reasoning_effort}）` : '本地模拟回复（工作台悬浮窗 → 设置里配置中转站）'}`);
     console.log('  ────────────────────────────────────────────────');
     console.log('  这个模式不含前端页面：页面请用 npm run local，');
     console.log(`  或让 npm run dev:workspace / dev:console 代理到 http://${HOST}:${PORT}。`);

@@ -3,18 +3,21 @@ export const translations = {
     sidebar: {
       create: "开始创作",
       comfy: "Comfy 生图",
+      tts: "TTS 语音合成",
       novelviz: "小说可视化",
       newChat: "新生图",
       history: "历史记录",
       about: "关于绘镜",
       engine: "绘镜 Creative Engine",
       tagline: "© 2026 Yoahoug. All Rights Reserved.",
-      version: "v1.2",
+      // 版本号来自仓库根 VERSION（Vite 注入，见 shared/app-version.mjs）
+      version: `v${import.meta.env.VITE_APP_VERSION || "0.0.0"}`,
       stable: "2026 Stable"
     },
     header: {
       creationCore: "生图工作台 (Image Studio)",
       comfy: "Comfy 生图 (ComfyUI Studio)",
+      tts: "TTS 语音合成 (TTS Studio)",
       novelviz: "小说场景可视化 (Novel Cinema)",
       history: "历史记录 (History)",
       brand: "绘镜",
@@ -144,18 +147,21 @@ export const translations = {
     sidebar: {
       create: "Start Creation",
       comfy: "Comfy Studio",
+      tts: "TTS Studio",
       novelviz: "Novel Cinema",
       newChat: "New Image",
       history: "History",
       about: "About Mirror Lens",
       engine: "Mirror Lens Creative Engine",
       tagline: "© 2026 Yoahoug. All Rights Reserved.",
-      version: "v1.2",
+      // 版本号来自仓库根 VERSION（Vite 注入，见 shared/app-version.mjs）
+      version: `v${import.meta.env.VITE_APP_VERSION || "0.0.0"}`,
       stable: "2026 Stable"
     },
     header: {
       creationCore: "Image Studio",
       comfy: "Comfy Studio (ComfyUI)",
+      tts: "TTS Studio (Voice)",
       novelviz: "Novel Cinema",
       history: "History",
       brand: "Mirror Lens",

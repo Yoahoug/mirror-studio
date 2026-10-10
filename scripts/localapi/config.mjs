@@ -74,10 +74,14 @@ export const LLM = {
   modelName: env('LLM_MODEL_NAME', ''),
   apiKey: env('LLM_API_KEY', ''),
   timeoutSeconds: envInt('LLM_TIMEOUT_SECONDS', 300),
+  // 思考等级（off / low / medium / high）与随机性只作为默认值：
+  // 工作台「悬浮窗对话 → 设置」里保存的配置优先（见 chat.mjs）。
+  reasoningEffort: env('LLM_REASONING_EFFORT', 'high'),
+  temperature: Number.parseFloat(env('LLM_TEMPERATURE', '0.9')) || 0.9,
 };
 
 export const providerConfigured = Boolean(PROVIDER.baseURL && PROVIDER.modelName && PROVIDER.apiKey);
-export const llmConfigured = Boolean(LLM.baseURL && LLM.modelName && LLM.apiKey);
+// 对话是否已配置是动态的（工作台里随时可改），统一用 chat.mjs 的 resolveChatConfig() 判断。
 
 // ComfyUI 本地生图（工作台的「Comfy 生图」板块，仅本地模式存在）。
 // 契约见桌面 Comfy\doc：原生接口在 8188，工作流模板随仓库放在 comfy/workflows/。
@@ -89,5 +93,20 @@ export const COMFY = {
   // 每张图前先 POST /free 卸载模型（显存紧张时打开；会带来每张重新加载权重的耗时）。
   freeMemory: envInt('COMFY_FREE_MEMORY', 0) === 1,
 };
+
+// 本机 TTS（工作台的「TTS 语音合成」板块，仅本地模式存在）。
+// 契约见 E:\AI\TTS\TTS-调用契约.md：CLI 是唯一后端，--json 时 stdout 恰好一个 JSON 信封。
+// 默认直接调「任意 Python 3.9+ × tts_cli.py」（契约等价入口），避开 Windows spawn .cmd 的引号问题。
+export const TTS = {
+  python: env('TTS_PYTHON', 'E:\\AI\\TTS\\Qwen3-TTS\\.venv\\Scripts\\python.exe'),
+  cli: env('TTS_CLI', 'E:\\AI\\TTS\\tts_cli.py'),
+  timeoutMs: Math.max(60000, envInt('TTS_TIMEOUT_MS', 30 * 60 * 1000)),
+  // 引擎空闲自动退出（秒）：合成完挂着实例会一直占显存，默认 10 分钟无请求自动释放。
+  idleTimeoutSeconds: envInt('TTS_IDLE_TIMEOUT_SECONDS', 600),
+  // 参考音频上传上限（MB）。
+  maxRefAudioMb: Math.max(1, envInt('TTS_MAX_REF_AUDIO_MB', 30)),
+};
+
+export const ttsConfigured = fs.existsSync(TTS.python) && fs.existsSync(TTS.cli);
 
 export const CHUNK_SIZE = 4 * 1024 * 1024;
