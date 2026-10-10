@@ -57,7 +57,6 @@ const EFFORT_OPTIONS: Array<{ value: ChatReasoningEffort; label: string; note: s
 ];
 
 const ENDPOINT_PRESETS = [
-  { label: "线上中转站", baseURL: "http://172.0.0.1:3000" },
   { label: "本机 LM Studio", baseURL: "http://127.0.0.1:1234" },
 ];
 
@@ -689,7 +688,7 @@ function ChatSettingsPanel({
           <input
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder="http://172.0.0.1:3000"
+            placeholder="http://127.0.0.1:1234"
             className="w-full rounded-xl border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 outline-none focus:border-[#6d5dfc]/50"
           />
         </div>
