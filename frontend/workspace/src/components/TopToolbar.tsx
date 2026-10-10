@@ -16,6 +16,7 @@ import UserPanel from "./UserPanel";
 import { type ReleaseInfo } from "./ReleaseNotesModal";
 import { type AccountSummaryResponse, type ChatModel, type UserInfo } from "../services/apiService";
 import { type Language } from "../i18n";
+import { appConfig } from "@shared/config/app-mode";
 
 interface TopToolbarProps {
   onOpenSettings: () => void;
@@ -61,8 +62,8 @@ export default function TopToolbar({
 
   const currentModel = chatModels.find((model) => model.channel_code === selectedModel) || chatModels[0];
   const modelReady = Boolean(currentModel);
-  // 本地开发者模式的入口文件带 data-mode="local"，只有那里才在悬浮窗里配置对话中转站。
-  const isLocalMode = document.getElementById("workspace-root")?.dataset.mode === "local";
+  // 本地开发者模式下展示对话中转站与显存释放
+  const isLocalMode = appConfig.isLocal;
   const displayName = userInfo?.display_name || userInfo?.nickname || userInfo?.username || "guest";
   const fallbackAvatarUrl = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userInfo?.username || "admin")}`;
   const avatarUrl = userInfo?.avatar?.trim() || fallbackAvatarUrl;

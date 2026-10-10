@@ -70,6 +70,7 @@
   <body>
     <div
       id="workspace-root"
+      data-mode="online"
       data-user="{% if request.user.is_authenticated %}{{ request.user.username }}{% endif %}"
       data-brand="{{ BRAND_NAME }}"
       data-csrf="{{ csrf_token }}"

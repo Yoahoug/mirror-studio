@@ -1,12 +1,9 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense, lazy } from "react";
 import { AnimatePresence } from "motion/react";
 import TopToolbar from "./components/TopToolbar";
 import Sidebar from "./components/Sidebar";
-import ChatWidget from "./components/ChatWidget";
 import HistorySpace from "./components/HistorySpace";
 import GenerationWorkbench from "./components/GenerationWorkbench";
-import ComfyWorkbench from "./components/ComfyWorkbench";
-import TtsWorkbench from "./components/TtsWorkbench";
 import NovelVisualizationSpace from "./components/NovelVisualizationSpace";
 import ReleaseNotesModal, { type ReleaseInfo } from "./components/ReleaseNotesModal";
 import SettingsModal, { type SettingsTabId } from "./components/SettingsModal";
@@ -14,6 +11,12 @@ import AuthModal from "./components/AuthModal";
 import { fetchAccountSummary, fetchChatModels, type AccountSummaryResponse, type ChatModel, type UserInfo } from "./services/apiService";
 import { ToastContainer, ToastType } from "./components/Toast";
 import { Language, translations } from "./i18n";
+import { appConfig } from "@shared/config/app-mode";
+import { Skeleton } from "@shared/ui";
+
+const ChatWidget = lazy(() => import("./components/ChatWidget"));
+const ComfyWorkbench = lazy(() => import("./components/ComfyWorkbench"));
+const TtsWorkbench = lazy(() => import("./components/TtsWorkbench"));
 
 const RELEASE_DISMISS_PREFIX = "mirror.release.dismissed:";
 const WORKSPACE_TABS = new Set(["create", "comfy", "tts", "novelviz", "history"]);
@@ -71,8 +74,8 @@ export default function App() {
   const initialNextPath = new URLSearchParams(window.location.search).get("next") || "";
   // 「Comfy 生图」「TTS 语音合成」板块只在本地开发者模式（npm run local 的入口文件带 data-mode="local"）
   // 出现；线上 Go 模板没有这个标记，所以线上既看不到入口也不会发这些请求。
-  const comfyEnabled = rootEl?.dataset.mode === "local";
-  const ttsEnabled = rootEl?.dataset.mode === "local";
+  const comfyEnabled = appConfig.features.comfy;
+  const ttsEnabled = appConfig.features.tts;
 
   const t = translations[language];
 
@@ -316,32 +319,36 @@ export default function App() {
                 t={t.history}
                 onOpenTask={openHistoryTask}
               />
-            ) : activeTab === 'comfy' && comfyEnabled ? (
-              <ComfyWorkbench
-                key="comfy-workbench"
-                isAuthenticated={isAuthenticated}
-                selectedModel={selectedModel}
-                chatModels={chatModels}
-                onOpenAuth={openAuth}
-                addToast={addToast}
-                selectedTaskNo={selectedComfyTaskNo}
-                resetSignal={workbenchResetSignal}
-                fillRequest={fillRequest}
-                onFillRequestConsumed={() => setFillRequest(null)}
-                onGenerationSubmitted={() => fetchAccountSummary().then(applyAccountSummary).catch(() => {})}
-              />
-            ) : activeTab === 'tts' && ttsEnabled ? (
-              <TtsWorkbench
-                key="tts-workbench"
-                isAuthenticated={isAuthenticated}
-                selectedModel={selectedModel}
-                chatModels={chatModels}
-                onOpenAuth={openAuth}
-                addToast={addToast}
-                selectedTaskNo={selectedTtsTaskNo}
-                resetSignal={workbenchResetSignal}
-                onGenerationSubmitted={() => fetchAccountSummary().then(applyAccountSummary).catch(() => {})}
-              />
+            ) : activeTab === 'comfy' && appConfig.features.comfy ? (
+              <Suspense fallback={<div className="p-8"><Skeleton className="h-64 w-full" /></div>}>
+                <ComfyWorkbench
+                  key="comfy-workbench"
+                  isAuthenticated={isAuthenticated}
+                  selectedModel={selectedModel}
+                  chatModels={chatModels}
+                  onOpenAuth={openAuth}
+                  addToast={addToast}
+                  selectedTaskNo={selectedComfyTaskNo}
+                  resetSignal={workbenchResetSignal}
+                  fillRequest={fillRequest}
+                  onFillRequestConsumed={() => setFillRequest(null)}
+                  onGenerationSubmitted={() => fetchAccountSummary().then(applyAccountSummary).catch(() => {})}
+                />
+              </Suspense>
+            ) : activeTab === 'tts' && appConfig.features.tts ? (
+              <Suspense fallback={<div className="p-8"><Skeleton className="h-64 w-full" /></div>}>
+                <TtsWorkbench
+                  key="tts-workbench"
+                  isAuthenticated={isAuthenticated}
+                  selectedModel={selectedModel}
+                  chatModels={chatModels}
+                  onOpenAuth={openAuth}
+                  addToast={addToast}
+                  selectedTaskNo={selectedTtsTaskNo}
+                  resetSignal={workbenchResetSignal}
+                  onGenerationSubmitted={() => fetchAccountSummary().then(applyAccountSummary).catch(() => {})}
+                />
+              </Suspense>
             ) : activeTab === 'novelviz' ? (
               <NovelVisualizationSpace
                 key="novelviz"
@@ -402,7 +409,11 @@ export default function App() {
       <ToastContainer toasts={toasts} onClose={removeToast} />
 
       {/* 悬浮窗对话：只在本地开发者模式（需要本机的对话中转站接口） */}
-      {comfyEnabled && <ChatWidget addToast={addToast} onFillPrompt={handleChatFillPrompt} />}
+      {appConfig.features.chatWidget && (
+        <Suspense fallback={null}>
+          <ChatWidget addToast={addToast} onFillPrompt={handleChatFillPrompt} />
+        </Suspense>
+      )}
     </div>
   );
 }
