@@ -7,7 +7,9 @@
 //
 // 配置优先级：工作台里保存的（local-data/store.json 的 chat 段）> .env.local 的 LLM_*。
 // 密钥只留在本机（store.json / .env.local），不下发浏览器，接口只回掩码。
-import {LLM} from './config.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import {DATA_DIR, LLM} from './config.mjs';
 import {persist, store} from './store.mjs';
 
 const MODELS_TIMEOUT_MS = 15000;
@@ -19,6 +21,7 @@ const EFFORTS = ['off', 'low', 'medium', 'high'];
  * 内置系统提示词：把画面描述扩写成生图提示词的通用助手（硬线：人物必须成年）。
  * 刻意保持中性——个性化的要求（题材边界、写法偏好）走工作台「悬浮窗对话 → 设置」里的
  * 自定义指令（存本机 local-data/store.json，不进仓库），两者的拼接见 buildChatSystemPrompt。
+ * 另有本机覆盖层：local-data/chat-prompt.txt 存在时整体替换内置版（该目录不入库）。
  */
 export const CHAT_SYSTEM_PROMPT = `你是绘镜（Mirror Studio）的生图提示词工程师。绘镜是用户本机私人部署的 AI 生图工作台（ComfyUI + Qwen-Image 模型）。
 
@@ -50,11 +53,22 @@ export const CHAT_SYSTEM_PROMPT = `你是绘镜（Mirror Studio）的生图提�
 - 负面提示词不用你管，生图侧已配好。
 - 用户只是聊天、问问题、让你改图或分析图片时，正常对话即可，上述输出纪律只针对生图提示词。`;
 
-/** 组装最终 system 消息：内置提示词 + 用户自定义附加偏好。 */
+/** 组装最终 system 消息：本机覆盖层或内置提示词 + 用户自定义附加偏好。 */
 export function buildChatSystemPrompt(customInstruction = '') {
+  const base = loadLocalPromptOverride() || CHAT_SYSTEM_PROMPT;
   const extra = String(customInstruction || '').trim();
-  if (!extra) return CHAT_SYSTEM_PROMPT;
-  return `${CHAT_SYSTEM_PROMPT}\n\n## 用户的个人偏好（用户自己配置的，遵守它）\n\n${extra}`;
+  if (!extra) return base;
+  return `${base}\n\n## 用户的个人偏好（用户自己配置的，遵守它）\n\n${extra}`;
+}
+
+/** 本机覆盖层：local-data/chat-prompt.txt 整体替换内置提示词（纯文本正文，不含 JS 语法）。 */
+function loadLocalPromptOverride() {
+  try {
+    const text = fs.readFileSync(path.join(DATA_DIR, 'chat-prompt.txt'), 'utf8').trim();
+    return text || null;
+  } catch {
+    return null; // 文件不存在 = 用内置中性版
+  }
 }
 
 /** 对话渠道的报错：配置类用 400，上游类用 502（server.mjs 按 status 回给前端）。 */
