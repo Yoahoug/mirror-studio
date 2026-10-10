@@ -90,7 +90,53 @@ export default function App() {
     if (tab === "tts" && !ttsEnabled) return;
     const nextTab = WORKSPACE_TABS.has(tab) ? tab : "create";
     setActiveTabState(nextTab);
+    // URL 是状态来源（台账 #7）：板块切换写进 query，刷新/前进后退/分享链接都能恢复
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", nextTab);
+    if (nextTab !== "history") {
+      url.searchParams.delete("task");
+      url.searchParams.delete("task_kind");
+    }
+    window.history.pushState({}, "", url.toString());
+    document.title = `绘镜 · ${
+      nextTab === "history" ? t.header.history : nextTab === "novelviz" ? t.header.novelviz : t.header.creationCore
+    }`;
   };
+
+  // 浏览器前进/后退：从 URL 恢复板块（含旧 tab=comfy/tts/novelviz 的兼容映射）
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const raw = params.get("tab") || "create";
+      const legacyTab = WORKSPACE_TABS.has(raw) ? raw : "create";
+      setActiveTabState(legacyTab);
+      const task = params.get("task") || "";
+      const kind = params.get("task_kind") || "";
+      if (task) {
+        openHistoryTask(kind === "comfy" ? `comfy:${task}` : kind === "tts" ? `tts:${task}` : task);
+      } else {
+        setSelectedTaskNo("");
+        setSelectedComfyTaskNo("");
+        setSelectedTtsTaskNo("");
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 首屏从 URL 恢复（刷新 / 分享链接场景）
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("tab") || "create";
+    if (raw !== "create") setActiveTab(WORKSPACE_TABS.has(raw) ? raw : "create");
+    const task = params.get("task");
+    if (task) {
+      const kind = params.get("task_kind") || "";
+      openHistoryTask(kind === "comfy" ? `comfy:${task}` : kind === "tts" ? `tts:${task}` : task);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const openNovelVisualization = () => {
     setSelectedNovelTaskId(null);
@@ -113,6 +159,7 @@ export default function App() {
         setSelectedComfyTaskNo(comfyTaskNo);
         setSelectedTaskNo("");
         setActiveTab("comfy");
+        syncTaskUrl(comfyTaskNo, "comfy");
         return;
       }
     }
@@ -122,6 +169,7 @@ export default function App() {
         setSelectedTtsTaskNo(ttsTaskNo);
         setSelectedTaskNo("");
         setActiveTab("tts");
+        syncTaskUrl(ttsTaskNo, "tts");
         return;
       }
     }
@@ -129,6 +177,15 @@ export default function App() {
     setSelectedTtsTaskNo("");
     setSelectedTaskNo(taskNo);
     setActiveTab("create");
+    syncTaskUrl(taskNo, "image");
+  };
+
+  /** 任务回跳结构化入 URL：?task=<no>&task_kind=<kind>（台账 #3.5-4） */
+  const syncTaskUrl = (taskNo: string, kind: "image" | "comfy" | "tts") => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("task", taskNo);
+    url.searchParams.set("task_kind", kind);
+    window.history.pushState({}, "", url.toString());
   };
 
   const applyAccountSummary = (summary: AccountSummaryResponse) => {
