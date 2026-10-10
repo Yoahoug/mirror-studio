@@ -753,7 +753,11 @@ func (s *Service) taskLeaseTimeoutSeconds(task *Task) int {
 }
 
 // stalledTaskTimeoutSeconds is the reference's stall window: the channel timeout
-// plus a margin, raised further for image-to-image edits.
+// plus a margin. The window must also cover the client timeout the attempt
+// actually uses — the Go port floors that above the channel value
+// (PROVIDER_TIMEOUT_SECONDS / OPENAI_IMAGE_EDIT_TIMEOUT), and a request allowed
+// to run past the window would have its lease expire mid-flight, letting a
+// second worker claim the task and call the upstream again.
 func (s *Service) stalledTaskTimeoutSeconds(task *Task) int {
 	channelTimeout := defaultTimeoutSecs
 	if task.Channel != nil && task.Channel.TimeoutSeconds > 0 {
@@ -763,13 +767,15 @@ func (s *Service) stalledTaskTimeoutSeconds(task *Task) int {
 	if running < minLeaseSeconds {
 		running = minLeaseSeconds
 	}
-	if task.GenerationMode == ModeImageToImage {
-		editSeconds := int(s.cfg.OpenAIImageEditTimeout / time.Second)
-		if editSeconds <= 0 {
-			editSeconds = 420
+	if task.Channel != nil {
+		requestTimeout := openAIGenerationTimeout(task.Channel, s.cfg.ProviderTimeoutSeconds)
+		if task.GenerationMode == ModeImageToImage {
+			if edit := openAIEditTimeout(task.Channel, s.cfg.OpenAIImageEditTimeout); edit > requestTimeout {
+				requestTimeout = edit
+			}
 		}
-		if running < editSeconds+60 {
-			running = editSeconds + 60
+		if running < requestTimeout+60 {
+			running = requestTimeout + 60
 		}
 	}
 	return running
