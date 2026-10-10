@@ -1,26 +1,11 @@
 // workspace 与 console 两个前端应用共用的 Vite 配置工厂，避免两份配置重复维护。
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import {createRequire} from 'module';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-// 合并为单个 npm 包后，根 node_modules 顶层的 tailwindcss 是 v3（根目录 build:css 的 CLI 需要），
-// 两个应用使用的 Tailwind v4 由 @tailwindcss/vite / @tailwindcss/node 依赖带入。
-// 这里沿该依赖边解析出 v4 的 CSS 入口，保证 src/index.css 中 `@import "tailwindcss"` 的解析结果与合并前一致。
-function resolveTailwindCssEntry(): string {
-  const require = createRequire(import.meta.url);
-  for (const plugin of ['@tailwindcss/vite', '@tailwindcss/node']) {
-    try {
-      return require.resolve('tailwindcss/index.css', {
-        paths: [path.dirname(require.resolve(plugin))],
-      });
-    } catch {
-      // 尝试下一个插件位置
-    }
-  }
-  throw new Error('无法从 @tailwindcss/vite 或 @tailwindcss/node 解析 Tailwind v4 的 index.css');
-}
+// Tailwind v4 的 CSS 入口解析与本地模式的单端口开发服务器共用一份实现。
+import {resolveTailwindCssEntry} from './tailwind-entry.mjs';
 
 const tailwindCssEntry = resolveTailwindCssEntry();
 
@@ -36,6 +21,11 @@ export interface SpaConfigOptions {
 }
 
 export function createSpaConfig({root, outDir, assetName, port}: SpaConfigOptions) {
+  // 开发代理目标：默认 127.0.0.1:8000。两种开发方式共用这一个地址：
+  // - 本地开发者模式（npm run local）：8000 上是 scripts/localapi 的零依赖本地服务；
+  // - Go 后端开发（DEBUG=1 go run .）：8000 上是 Go 服务本身。
+  // 前端只认相对路径，两种后端下代码都不需要改动。
+  const apiTarget = process.env.LOCAL_API_TARGET || 'http://127.0.0.1:8000';
   return defineConfig(() => {
     return {
       root,
@@ -66,14 +56,16 @@ export function createSpaConfig({root, outDir, assetName, port}: SpaConfigOption
       },
       server: {
         port,
+        // 端口被占用时直接失败，而不是悄悄换到 3001/3002：
+        // 本地模式的地址是固定的，静默漂移只会让代理和文档对不上。
+        strictPort: true,
         // HMR is disabled in AI Studio via DISABLE_HMR env var.
         // Do not modify — file watching is disabled to prevent flickering during agent edits.
         hmr: process.env.DISABLE_HMR !== 'true',
         proxy: {
-          '/api': {
-            target: 'http://127.0.0.1:8000',
-            changeOrigin: true,
-          },
+          '/api': {target: apiTarget, changeOrigin: true},
+          '/console/api': {target: apiTarget, changeOrigin: true},
+          '/downloads': {target: apiTarget, changeOrigin: true},
         },
       },
     };

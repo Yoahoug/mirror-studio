@@ -9,6 +9,9 @@
     "build:ssr": "echo SSR pages are served from templates/ with static/css/main.css produced by build:css",
     "dev:workspace": "vite --config frontend/workspace/vite.config.ts --port=3000 --host=0.0.0.0",
     "dev:console": "vite --config frontend/console/vite.config.ts --port=3001 --host=0.0.0.0",
+    "local": "node scripts/localapi/dev.mjs",
+    "local:api": "node scripts/localapi/server.mjs",
+    "local:check": "node scripts/localapi/check.mjs",
     "lint": "tsc --noEmit -p frontend/tsconfig.json",
     "watch:css": "tailwindcss -i ./static_src/css/tailwind.css -o ./static/css/main.css --watch"
   },

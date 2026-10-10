@@ -19,6 +19,9 @@ static/css/main.css
 /novel/*.epub
 /media/
 .env
+# 本地开发者模式（npm run local）：数据目录与可选的本地渠道配置
+local-data/
+.env.local
 .DS_Store
 .playwright-cli/
 output/

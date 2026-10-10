@@ -3,11 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>绘镜 - AI 创作空间</title>
+    <title>绘镜 - 管理控制台</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!--
+      开发服务器入口（npm run local / npm run dev:console）。
+      id 必须是 console-root：App.tsx 从 #console-root 的 data-* 读取用户名与品牌名。
+      本地开发者模式的账号固定具备管理员权限，所以这里直接给出这些值，
+      让管理台首屏不依赖任何接口即可渲染；线上外壳由 Go 的 SSR 模板渲染。
+    -->
+    <div id="console-root" data-user="local" data-brand="绘镜"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

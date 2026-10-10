@@ -19,6 +19,9 @@ media
 media/
 novel/
 novelviz/
+# 本地开发者模式的数据目录（npm run local），不参与镜像构建
+local-data
+local-data/
 staticfiles
 .env
 .env.*
