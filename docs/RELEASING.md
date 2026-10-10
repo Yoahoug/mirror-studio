@@ -29,7 +29,7 @@ python3 scripts/release.py 0.0.2 --dry-run
 #    打 annotated tag v0.0.2 并推送（--no-tag / --no-push 可跳过对应步骤）
 python3 scripts/release.py 0.0.2
 
-# 4. 构建、验证、部署（镜像由 GitHub Actions 自动构建并发布到 GHCR）
+# 4. 部署（推送 v0.0.2 标签会触发 Actions 构建并发布镜像，等它完成后再拉取）
 git checkout v0.0.2
 docker compose pull              # 或 docker compose up -d --build 就地构建
 docker compose up -d
@@ -42,15 +42,26 @@ tag 消息即该版本的更新说明。
 
 ## 容器镜像（GitHub Actions → GHCR）
 
-`.github/workflows/container.yml` 在推送到 `main`、推送 `v*` 标签或手动触发时，
-用仓库根 `Dockerfile` 构建镜像并发布到 `ghcr.io/yoahoug/mirror-studio`：
+`.github/workflows/container.yml` 用仓库根 `Dockerfile` 构建镜像并发布到
+`ghcr.io/yoahoug/mirror-studio`。**普通提交不触发构建**，只有两种情形会构建：
 
-- **标签**：`VERSION` 的内容（当前 `0.0.1`）、`latest`（默认分支）、
-  `sha-<短SHA>`；推送 `v*` 标签时额外产出不带 `v` 的版本标签。
+- **推送 `v*` 版本标签**：即上面发布步骤第 3 步 `release.py` 打出的标签，
+  镜像随之发布，这是常规发布路径；
+- **手动触发**（Actions → 构建并发布容器镜像 → Run workflow）：用于在不发新版本的
+  情况下刷新当前 `VERSION` 的镜像（例如 0.0.1 迭代期间改了代码、要更新镜像）。
+
+版本纪律（workflow 不自行推导版本）：
+
+- **版本号唯一来源是仓库根 `VERSION`**，而 `VERSION` 只能由 `scripts/release.py`
+  修改；workflow 只读取它，不递增、不覆盖；
+- **标签**：`VERSION` 的内容（当前 `0.0.1`）、`latest`（默认分支或版本标签）、
+  `sha-<短SHA>`；推送 `v*` 标签时额外产出不带 `v` 的版本标签；
+- **建议**：部署端按显式版本引用（compose 默认 `:0.0.1`，`IMAGE_TAG` 可覆盖），
+  不要依赖 `latest` 回滚；
 - **缓存**：构建使用 GitHub Actions 缓存（`type=gha, mode=max`），
-  前端 `npm ci`、Go 模块下载与各构建段都会命中，重复构建显著加快。
-- **部署端**：`docker-compose.yml` 默认引用该镜像（`IMAGE_TAG` 可覆盖标签）；
-  包是公开的，`docker compose pull` 无需登录（改成私有包则需 `docker login ghcr.io`）。
+  前端 `npm ci`、Go 模块下载与各构建段都会命中，重复构建显著加快；
+- **部署端**：`docker-compose.yml` 默认引用该镜像；包是公开的，
+  `docker compose pull` 无需登录（改成私有包则需 `docker login ghcr.io`）。
 
 ## 部署形态（0.0.1）
 

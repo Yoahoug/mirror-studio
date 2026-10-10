@@ -12,10 +12,10 @@
   生成结果落在 `local-data/`（详见 `docs/LOCAL-MODE.md`）
 - 本地开发者模式只占用一个端口（默认 8000）：工作台在 `/`、管理台在 `/admin`，
   Vite 以 middleware 方式挂在同一个 HTTP 服务上（含 HMR），不再需要 3000/3001
-- GitHub Actions 工作流 `.github/workflows/container.yml`：推送到 `main`、推送 `v*`
-  标签或手动触发时构建容器镜像并发布到 `ghcr.io/yoahoug/mirror-studio`
-  （标签跟随 `VERSION`，当前 `0.0.1`）；构建使用 Actions 构建缓存
-  （`type=gha, mode=max`），后续构建复用 npm/Go 依赖层
+- GitHub Actions 工作流 `.github/workflows/container.yml`：推送 `v*` 版本标签或
+  手动触发时构建容器镜像并发布到 `ghcr.io/yoahoug/mirror-studio`
+  （普通提交不触发构建；标签跟随 `VERSION`，当前 `0.0.1`）；
+  构建使用 Actions 构建缓存（`type=gha, mode=max`），后续构建复用 npm/Go 依赖层
 
 ### Changed
 

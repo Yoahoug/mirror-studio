@@ -1,15 +1,21 @@
 # 构建容器镜像并发布到 GHCR（GitHub Container Registry）。
 #
-# 镜像：ghcr.io/yoahoug/mirror-studio
-# 标签：VERSION 文件里的版本号（当前 0.0.1）、latest（默认分支）、sha-<短SHA>；
+# 触发策略：只在需要产出镜像时构建，普通提交（含 main 推送）不触发，
+#   - push v* 版本标签：正式发布流程（scripts/release.py 打标签）的一部分
+#   - workflow_dispatch：手动刷新当前 VERSION 的镜像（例如 0.0.1 的日常迭代）
+#
+# 版本约束：镜像版本号始终取自仓库根的 VERSION 文件（唯一修改者是
+# scripts/release.py），workflow 不自行推导、不递增版本。
+#
+# 镜像：ghcr.io/yoahoug/mirror-studio（公开包）
+# 标签：VERSION（当前 0.0.1）、latest（默认分支或版本标签）、sha-<短SHA>；
 #       推送 v* 标签时额外产出不带 v 的版本标签。
 # 缓存：docker/build-push-action 走 GitHub Actions 构建缓存（type=gha, mode=max），
-#       前端 npm ci、Go 模块下载与各构建段都会命中，后续构建显著加快。
+#       前端 npm ci、Go 模块下载与各构建段都会命中，重复构建显著加快。
 name: 构建并发布容器镜像
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -52,7 +58,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=${{ steps.version.outputs.value }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
             type=sha,format=short,prefix=sha-
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           labels: |

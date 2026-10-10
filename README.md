@@ -48,9 +48,9 @@ docker compose pull && docker compose up -d
 docker compose up -d --build
 ```
 
-镜像由 `.github/workflows/container.yml` 在每次推送到 `main` 时构建并发布到
-`ghcr.io/yoahoug/mirror-studio`（版本标签跟随 `VERSION`，当前 `0.0.1`；
-公开包，拉取无需登录）。构建走 GitHub Actions 缓存，
+镜像由 `.github/workflows/container.yml` 在推送 `v*` 版本标签或手动触发时构建并
+发布到 `ghcr.io/yoahoug/mirror-studio`（版本标签跟随 `VERSION`，当前 `0.0.1`；
+普通提交不触发构建；公开包，拉取无需登录）。构建走 GitHub Actions 缓存，
 重复构建会复用 npm/Go 依赖层。`IMAGE_TAG` 可覆盖 compose 使用的镜像标签。
 
 启动过程固定为：建库迁移 → 幂等种子（站点配置、管理员、默认渠道）→ 监听；失败会打印原因并退出，用 `docker compose logs app` 查看。
