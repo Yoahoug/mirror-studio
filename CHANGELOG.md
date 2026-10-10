@@ -16,7 +16,7 @@
 - 创作台侧栏与顶栏按「白底静奢极简」设计语言重做；移动端底部导航改为横滑
   胶囊布局（修复 375px 挤压）；头像改为本地 identicon 生成，移除 dicebear
   外链；板块与任务回跳接入 URL 状态（刷新/前进后退/分享链接可恢复）。
-- 构建管线：`npm run build` 末尾新增产物契约校验（4 个固定产物缺失即失败）
+- 构建管线：`npm run build` 末尾新增产物契约校验（固定产物缺失即失败）
   与 gzip 体积表；线上入口包从约 600KB 降到 554KB（gzip 166KB），Comfy/TTS/
   对话等本地专用代码拆为独立 chunk 不进线上包；删除 0 引用死依赖
   （@google/genai / express / dotenv / tsx / @types/express）；新增
@@ -36,6 +36,54 @@
 - TTS 音色库路径与 CLI 对齐：本地服务此前读 `E:\AI\TTS\voices`（不存在），
   实际资产在 `E:\AI\资产\TTS\音色库`（`tts_cli.py` 的 `ASSETS = TTS_ROOT/../资产`），
   导致工作台音色库恒为空、克隆类预热也拿不到参考音频；现已按同一规则解析。
+
+本轮全量审查（后端 → 本地服务 → 前端 → 构建发布）的修复：
+
+- **配额结算死锁（严重）**：配额事务在 `WithImmediate` 回调里经连接池读站点配置，
+  而连接池只放出一条连接且正被该事务持有——缓存过期或管理台改配置后，冻结/结算
+  请求永久卡死，还持着 SQLite 写锁堵住全服务的数据库访问；`siteconfig` 新增
+  `LookupTx`/`IntTx` 事务版读取，配额事务内不再经过连接池。
+- **数据库事务收尾不再受调用方 ctx 取消影响**：`ROLLBACK`/`COMMIT` 原先直接用调用方
+  context，客户端断连、worker 关停或回调 panic 时收尾语句本身执行失败，带事务的连接
+  被放回连接池，之后写入要么报 `cannot start a transaction within a transaction`，
+  要么静默落在被回滚的事务里；收尾改用 `context.WithoutCancel` 并放进 `defer`。
+- **4MB 以上文件完全无法上传（严重）**：请求体上限沿用参考实现的 4MB，而部署默认分片
+  就是 8MB，每个满片都被截断后被 400 拒绝，所有 EPUB 与稍大的参考图在线上传不了；
+  上限改为 `max(4MB, RESUMABLE_UPLOAD_CHUNK_SIZE, NOVELVIZ_MAX_EPUB_UPLOAD_BYTES)`。
+- **慢任务被重复执行、重复计费**：停顿/租约窗口按「渠道超时 + 120s」计算，而请求实际
+  允许跑满客户端超时（默认 300s），任务在途时被第二个 worker 认领并再次调用上游；
+  租约改为 `max(渠道超时 + 120s, 任务客户端超时 + 60s, 180s)`。
+- **重启后小说任务永久 running**：中断的任务停留在 running，而周期性救援只认「从未收到
+  事件」的任务（真正跑过的都写过 task_started），重试接口又只接受 failed/canceled；
+  启动时新增 `RequeueInterruptedTasks` 把 running 任务置回 queued（保留已完成的场景分析）。
+- **停用账号（`is_active = 0`）仍能凭旧会话访问**：会话解析出用户后补上该标志检查，
+  为假即清会话按匿名处理，与参考实现每个请求都校验的语义一致。
+- **SSR 表单三处校验缺失**：登录只要账号密码正确就放行（空验证码也能登录）、注册完全
+  不校验邮箱验证码、注册/重置密码不校验密码强度（可把密码改成「1」）；三处补齐为与
+  API 同源校验，被拒的登录提交按 `form_invalid` 计入一次失败。
+- **SSR 跳转两处缺陷**：已登录访问 `/login`、`/register` 现在 302 → `/workspace`
+  （契约 §1）；`next=/\evil.com` 这类反斜杠目标不再通过回跳校验（浏览器把 `\` 当 `/`）。
+- **更新说明 JSON 注入**：`WORKSPACE_RELEASE_JSON` 中笔记含 `</script>` 时可越出
+  `<script type="application/json">` 执行脚本；按 Django `json_script` 的做法转义
+  `<`、`>`、`&`（普通文案输出不变，SSR 夹具逐字节一致）。
+- **管理台参数校验**：`/console/api/*` 的数字与枚举参数改为 400（业务码 400001）而不是
+  500，`channel_type` 拒绝未定义值，`Allow` 头顺序与参考一致。
+- **本地服务（`npm run local`）健壮性**：非法转义路径（`/downloads/%zz`）不再打死进程；
+  EPUB 上传拒绝 `..` 穿越；ComfyUI 在跑时按 GPU 锁串行；Comfy 任务超时/中止先取消再
+  收尾；TTS 串行链异常不再打断后续任务；上传会话创建返回 201、不存在的资源返回
+  404/404000；分页参数与 Go 侧同规则夹取（`per_page` 1..100、页码夹到末页）；重启时把
+  中断的任务标为失败并写明原因，不再永久 running。
+- **生成工作台轮询护栏触发后卡死在「生成中」**：护栏放弃追踪时按钮与状态面板永不归位；
+  新增「已停止追踪」状态与说明，提交按钮恢复可用，历史仍可手动刷新。
+- **批量生成不是真串行**：多张图同时提交且结果互相覆盖；改为逐张串行（前一张终态后
+  才提交下一张，带进度提示），结果进堆叠画廊（角标 `n / 总数`）。
+- **历史记录静默轮询把列表截回第一页**：静默刷新改为只合并第一页（新任务前置、
+  已知任务原位替换），浏览多页时不再被清空。
+- **会话过期处理与弹窗焦点**：只有 `AuthRequiredError` 才登出，普通接口错误不再误登出；
+  401 全局兜底真正接线（线上弹登录框、本地模式只报错）；弹窗 Esc 关闭改经 ref 取最新
+  回调，App 重渲染不再抢走弹窗内输入框的焦点。
+- **管理台搜索每敲一个字发一次请求且参数滞后**：改为点「搜索」或回车提交一次，
+  输入值与已应用关键词分离。
 
 ### Added
 
@@ -108,11 +156,44 @@
   同时保留 `docker compose up -d --build` 就地构建
 - 新增 `.gitattributes`：`internal/web/testdata/` 参照文件固定为 LF，
   Windows 检出（`core.autocrlf=true`）不再把 golden 转成 CRLF 导致测试失败
+- `config.Load` 改为接收构建注入的版本号（`-ldflags -X main.version`）作为
+  `CHANGELOG.md` 缺失时的兜底，不再硬编码一个每次发布都会过期的版本；
+  `APP_PORT` 现在真的决定监听端口——此前 `main.go` 把默认地址硬编码成
+  `0.0.0.0:8000`，`APP_PORT` 只影响 DEBUG 下兜底的 `PUBLIC_ORIGIN`；
+  `APP_LISTEN` 仍是完整地址且优先级最高，`-listen` 启动参数覆盖两者
+- `docker-compose.yml` 的镜像标签默认改为 `:latest`（`IMAGE_TAG=0.0.1` 可固定到
+  版本，回滚时推荐）：此前默认写死 `:0.0.1`，而 compose 默认值不会跟随 `VERSION`，
+  日常迭代里 `docker compose pull` 会静默拉到旧镜像
+- 镜像构建段补 `internal/web/templates/` 与 `VERSION`：漏掉模板时 Tailwind 扫描不到
+  SSR 页面的类名（实测少 23 个选择器，登录/注册/错误页样式坏掉），漏掉 `VERSION`
+  时页脚与产物里的版本静默变成兜底值
+- 构建契约校验从 4 个产物扩到 5 个（补 `static/css/main.css`）：SSR 页面按固定路径
+  引用它，缺了就是一个「构建成功但页面坏样式」的坏包
+- `scripts/release.py`：目标版本段已存在时不再改写 `[Unreleased]`（避免同一版本出现
+  两个 `## [x.y.z]` 段导致服务端与 tag 取到不同的那段）；无日期的版本标题现在能被
+  正确补上日期（正则会跨空行把正文首条 bullet 当成日期）；写文件固定 `newline="\n"`，
+  Windows 上不再把 `CHANGELOG.md` / `VERSION` 改写成 CRLF（`$(cat VERSION)` 会把
+  `\r` 带进 `-ldflags`），`VERSION` 同时加入 `.gitattributes` 固定 LF 检出
+- 文档与配置对齐现状：`docs/api-contract-0.0.1.md` §11 的环境变量名按
+  `tools/diff/run.py:COMMON_ENV` 逐项校正（`EMAIL_DAILY_LIMIT_PER_*` → `EMAIL_VERIFICATION_DAILY_LIMIT_PER_*`、
+  `EMAIL_FROM` → `DEFAULT_FROM_EMAIL`、`RISK_LOGIN_FAIL_WINDOW_SECONDS` → `RISK_LOGIN_LOCK_MINUTES`、
+  `DAILY_FREE_QUOTA` → `DEFAULT_DAILY_FREE_QUOTA`、`NOVELVIZ_SCENE_CONCURRENCY` → `NOVELVIZ_IMAGE_CONCURRENCY`、
+  `NOVELVIZ_IMAGE_BASE_URL` → `NOVELVIZ_API_BASE_URL`、`MAX_NOVEL_EPUB_BYTES` →
+  `NOVELVIZ_MAX_EPUB_UPLOAD_BYTES`，移除已不存在的 `WORKSPACE_RELEASE_*`）；
+  `README.md` 的分片默认值、`docs/FRONTEND.md`/`.env.example` 的监听配置说明、
+  `docs/DEVELOPMENT.md` 的差分门禁现状（`tools/diff` 缺 `.venv-ref/` 时无法运行）、
+  `docs/HANDOFF-0.0.1.md` 的历史标注均已同步
+- 安全审计台账（`docs/security-audit-0.0.1.md`）的状态列按当前代码逐条回填：
+  原表 22 项全部标「待修复/待新增」，核验后 20 项已修复、2 项结论不成立
+  （参考实现同样不持久化风险事件；`net/url` 本身会小写 scheme，大写 scheme
+  并未被拒）
 
 ### Removed
 
 - `WORKSPACE_VITE_DEV_URL` / `CONSOLE_VITE_DEV_URL` 以及 DEBUG 模式下的页面注入分支
   （连同对应的参照测试与 3 个 golden 文件）；环境里仍残留这两个变量会拒绝启动
+- 共享层 6 个无人引用且路由写错的 API 模块（`shared/services` 的
+  `generation`/`upload`/`comfy`/`tts`/`novelviz`/`chat`，实际调用方都用自己的服务层）
 
 ## [0.0.1] - 2026-10-09
 

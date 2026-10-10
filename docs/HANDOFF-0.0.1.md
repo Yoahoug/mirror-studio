@@ -1,5 +1,12 @@
 # 会话交接（0.0.1 重写，切换到新设备继续）
 
+> **本文是历史记录，勿当作当前待办。** 它是 Django → Go 重写期（分支
+> `refactor/0.0.1`，已并入 `main`、远端分支已删）为切设备写的交接单。
+> 其中「下一步」与状态已过时：S6 容器/发布文档已补齐（见 `docs/RELEASING.md`），
+> 安全审计清单的现状见 `docs/security-audit-0.0.1.md` 表格的「状态」列，
+> `tools/diff/` 保留为留档资产（`.venv-ref/` 不在仓库里，重建后 §2 的命令才可用）。
+> 当前开发入口是 `docs/DEVELOPMENT.md`，发布入口是 `docs/RELEASING.md`。
+
 分支：`refactor/0.0.1`（已推送到 `origin`），基线文档在 `docs/`。
 最后更新：2026-10-10。
 

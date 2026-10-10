@@ -56,8 +56,8 @@ tag 消息即该版本的更新说明。
   修改；workflow 只读取它，不递增、不覆盖；
 - **标签**：`VERSION` 的内容（当前 `0.0.1`）、`latest`（默认分支或版本标签）、
   `sha-<短SHA>`；推送 `v*` 标签时额外产出不带 `v` 的版本标签；
-- **建议**：部署端按显式版本引用（compose 默认 `:0.0.1`，`IMAGE_TAG` 可覆盖），
-  不要依赖 `latest` 回滚；
+- **部署引用**：compose 默认拉 `:latest`（跟随默认分支与最新版本，日常迭代
+  省事）；要按版本固定或回滚，用 `IMAGE_TAG=0.0.1 docker compose pull`。
 - **缓存**：构建使用 GitHub Actions 缓存（`type=gha, mode=max`），
   前端 `npm ci`、Go 模块下载与各构建段都会命中，重复构建显著加快；
 - **部署端**：`docker-compose.yml` 默认引用该镜像；包是公开的，
@@ -81,8 +81,8 @@ tag 消息即该版本的更新说明。
 
 `SECRET_KEY`（≥32 字符）、`FIELD_CRYPT_KEY`（≥8 字符，字段加密密钥，
 缺失即拒绝启动——这是 0.0.1 的安全底线，不再有明文回退）、生产环境还需
-`PUBLIC_ORIGIN`。完整清单与默认值见 `.env.example` 与
-`docs/api-contract-0.0.1.md` §11。
+`PUBLIC_ORIGIN`。冻结集与语义见 `docs/api-contract-0.0.1.md` §11，常用项示例见
+`.env.example`（完整读取清单以 `internal/config/config.go` 为准）。
 
 ## 安全头与反代
 

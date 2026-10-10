@@ -49,9 +49,10 @@ docker compose up -d --build
 ```
 
 镜像由 `.github/workflows/container.yml` 在推送 `v*` 版本标签或手动触发时构建并
-发布到 `ghcr.io/yoahoug/mirror-studio`（版本标签跟随 `VERSION`，当前 `0.0.1`；
-普通提交不触发构建；公开包，拉取无需登录）。构建走 GitHub Actions 缓存，
-重复构建会复用 npm/Go 依赖层。`IMAGE_TAG` 可覆盖 compose 使用的镜像标签。
+发布到 `ghcr.io/yoahoug/mirror-studio`，标签有 `VERSION`（当前 `0.0.1`）、
+`latest`、`sha-<短SHA>`（普通提交不触发构建；公开包，拉取无需登录）。构建走
+GitHub Actions 缓存，重复构建会复用 npm/Go 依赖层。compose 默认拉 `latest`，
+要固定到版本（回滚时推荐）用 `IMAGE_TAG=0.0.1 docker compose pull`。
 
 启动过程固定为：建库迁移 → 幂等种子（站点配置、管理员、默认渠道）→ 监听；失败会打印原因并退出，用 `docker compose logs app` 查看。
 
@@ -169,7 +170,7 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 默认分片配置：
 
 ```bash
-RESUMABLE_UPLOAD_CHUNK_SIZE=1048576
+RESUMABLE_UPLOAD_CHUNK_SIZE=8388608
 RESUMABLE_UPLOAD_SESSION_TTL_SECONDS=86400
 NOVELVIZ_MAX_EPUB_UPLOAD_BYTES=83886080
 ```

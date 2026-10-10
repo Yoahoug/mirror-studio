@@ -261,7 +261,7 @@ export const translations = {
     },
     settings: {
       title: "Settings",
-      subtitle: "ArtMirror Config",
+      subtitle: "System preferences",
       tabs: {
         account: "Account",
         pref: "Preferences",

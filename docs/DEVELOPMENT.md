@@ -10,7 +10,7 @@
 - Go ≥ 1.26（`go.mod` 的 `go 1.26.0`；SQLite 驱动是纯 Go 的 `modernc.org/sqlite`，
   不需要任何 C 依赖）
 - Node ≥ 20（仅前端构建需要）
-- Python 3 仅用于 `tools/diff/`（差分验证，见下文）
+- Python 3 仅用于重写期的差分工具 `tools/diff/`（见下文，需自备 `.venv-ref/` 参照实现）
 
 ## 两条本地开发路线
 
@@ -73,18 +73,24 @@ npm run lint
 首次启动会自动建库、跑迁移、幂等种子 siteconfig/默认渠道，并用
 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 创建或重置管理员。删除这些文件即重置环境。
 
-## 差分验证（tools/diff，dev 资产）
+## 差分验证（tools/diff，重写期资产）
 
-`tools/diff/` 是重写期建立的验证工具，保留在仓库里作为回归门禁：
-`python3 tools/diff/run.py --target python|go --out .reftmp/run-…` 回放
-main/email/upstream 三档语料，`tools/diff/compare.py` 逐 profile 对比
-trace+snapshot，`tools/diff/compare_upstream.py` 对比上游调用录制。
-两侧必须在同一天录制；截图对比容差见 `docs/HANDOFF-0.0.1.md` §5。
-需要参考实现（`.venv-ref/`，Django 5.2）在场；日常开发不依赖它。
+`tools/diff/` 是 Django → Go 重写期的验证工具：`python3 tools/diff/run.py
+--target python|go --out .reftmp/run-…` 回放 main/email/upstream 三档语料，
+`tools/diff/compare.py` 逐 profile 对比 trace+snapshot，`compare_upstream.py`
+对比上游调用录制，`compare_shots.py` 做截图像素对比（容差见
+`docs/HANDOFF-0.0.1.md` §5）。两侧必须在同一天录制。它需要参考实现
+`.venv-ref/`（Django 5.2，搭建步骤见 HANDOFF §4）与联网录制环境，而
+`.venv-ref/` 不在仓库里，因此**当前无法直接运行**——工具与语料留档，供将来
+重建参照环境时复现重写期的逐字节一致结论。
+
+日常回归门禁是 `go test ./...`、`npm run local:check`（隔离实例自检）与
+`.github/workflows/frontend-quality.yml`（前端类型检查与构建）。
 
 ## 配置
 
-环境变量冻结集与语义见 `docs/api-contract-0.0.1.md` §11，逐项示例见 `.env.example`。
+环境变量冻结集与语义见 `docs/api-contract-0.0.1.md` §11，常用示例见 `.env.example`
+（只列必填与常用项，完整清单以 `internal/config/config.go` 为准）。
 0.0.1 刻意移除了 `AUTO_*` 启动开关、`GENERATION_TASKS_RUN_INLINE`、
 `MINIO_*`、`ALLOW_INSECURE_PROD`、`WORKSPACE_VITE_DEV_URL` /
 `CONSOLE_VITE_DEV_URL` 等运行模式开关：行为固定为

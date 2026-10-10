@@ -331,32 +331,35 @@ IP 规则、敏感词（精确/包含）、任务限流键与文案一致。Go �
 
 ---
 
-## 附：按严重度排序的修复清单（下一会话按此顺序执行）
+## 附：按严重度排序的修复清单（状态列已按当前代码回填）
+
+下表 22 项在 2026-10-10 的收尾会话里逐条对照当前代码核验：20 项已修复、
+2 项结论不成立（详见「状态」列的说明）。核验结论附了关键位置，
+「已修复」表示现在读到的行为是修好后的行为，而不是「改动已排期」。
 
 | 级别 | 条目 | 位置 | 状态 |
 | --- | --- | --- | --- |
-| P0 | SSR `POST /login` 绕过登录锁定与失败计数 | `internal/web/handlers.go:421-459` | 待修复 |
-| P0 | `MOCK_PROVIDER_ENABLED` 默认 true 且生产无校验 | `internal/config/config.go:358` | 待修复 |
-| P0 | 配额结算与终态写入非同一事务 → 冻结滞留 | `internal/generator/worker.go:287-295` 等 | 待修复 |
-| P1 | 会话缺 auth-hash，改密不失效其它会话 | `internal/auth/auth.go:620-623` | 待修复 |
-| P1 | 登录未轮换 CSRF 令牌 | `internal/auth/auth.go:616-629` | 待修复 |
-| P1 | 未实现 `SECURE_SSL_REDIRECT` / `X-Forwarded-Proto` | `internal/config/config.go:254` | 待修复 |
-| P1 | 风险事件不落库（prompt 拦截、任务限流） | `internal/risk/service.go:161-168` | 待修复 |
-| P1 | 参考图仅校验文件头（参考做整文件校验） | `internal/media/uploads.go:491`、`generator/provider.go:896-907` | 待修复 |
-| P1 | `isGlobalIP` 缺 IPv6 网段 | `internal/media/remote.go:153-168` | 待修复 |
-| P1 | 邮箱验证码先删后比，一次错即烧掉 | `internal/auth/email_verification.go:89-101,273` | 待修复 |
-| P1 | 遗留 pbkdf2 哈希登录后不回写为 argon2 | `internal/auth/auth.go:243-245,526` | 待修复 |
-| P1 | 取消/删除的配额台账备注与参考不同 | `internal/generator/service.go:596,615` | 待修复 |
-| P2 | SSR 验证码用 math/rand 且不读站点配置覆盖 | `internal/web/pages.go:92-100`、`handlers.go:527` | 待修复 |
-| P2 | DB 出错时 IP 规则放行（参考为拒绝） | `internal/risk/service.go:82-86` | 待修复 |
-| P2 | CSRF 未做 Origin/Referer 校验 | `internal/httpapi/session.go:302-324` | 待修复 |
-| P2 | 生产静态响应缺安全头 | `internal/httpapi/middleware.go:191-198` | 待修复 |
-| P2 | 远程取图错误分类不可重试、exception_type 不同 | `internal/media/remote.go:29-49` | 待修复 |
-| P2 | 大写 scheme 被拒（参考接受） | `internal/media/remote.go:82-84` | 待修复 |
-| P2 | 缺少 `total_size` 文案不同 | `internal/media/uploads.go:79-82` | 待修复 |
-| P2 | 分片上传 EPUB 未读 `NOVELVIZ_UPLOAD_DIR` | `internal/media/uploads.go:519` | 待修复 |
-| P2 | `TIME_ZONE` 非法时告警回落而非拒绝启动 | `internal/quota/service.go:459-470` | 待修复 |
-| P2 | 新增：已移除的安全开关被显式开启时应拒绝启动 | `internal/config/` | 待新增 |
+| P0 | SSR `POST /login` 绕过登录锁定与失败计数 | `internal/web/handlers.go:421-459` | **已修复**：SSR 登录接入风控（`ensureLoginAllowed`/`recordLoginFailure`/`clearLoginFailures`，handlers.go:474-496） |
+| P0 | `MOCK_PROVIDER_ENABLED` 默认 true 且生产无校验 | `internal/config/config.go:358` | **已修复**：默认 false，非 DEBUG 开启即拒绝启动（config.go:401-406） |
+| P0 | 配额结算与终态写入非同一事务 → 冻结滞留 | `internal/generator/worker.go:287-295` 等 | **已修复**：成功/失败/取消/删除都在终态事务内结算（generator/store.go:662-740,818-864） |
+| P1 | 会话缺 auth-hash，改密不失效其它会话 | `internal/auth/auth.go:620-623` | **已修复**：会话写入 `session_auth_hash`，每请求比对，不符即 Flush（httpapi/middleware.go:199-212） |
+| P1 | 登录未轮换 CSRF 令牌 | `internal/auth/auth.go:616-629` | **已修复**：API 与 SSR 登录都 `RotateCSRFToken`（auth/handlers.go:148-150、web/handlers.go:489-491） |
+| P1 | 未实现 `SECURE_SSL_REDIRECT` / `X-Forwarded-Proto` | `internal/config/config.go:254` | **已修复**：非 DEBUG 默认开启，明文请求 301 到 `PUBLIC_ORIGIN`（httpapi/middleware.go:120-130） |
+| P1 | 风险事件不落库（prompt 拦截、任务限流） | `internal/risk/service.go:161-168` | **不成立**：参考实现的写入在自身 atomic 块内被回滚，同样不持久化（verification-0.0.1.md:96-101）；`login_failure` 现已落库（risk/service.go:164-171） |
+| P1 | 参考图仅校验文件头（参考做整文件校验） | `internal/media/uploads.go:491`、`generator/provider.go:896-907` | **已修复**：两侧都改为整文件解码（uploads.go:492-496、provider.go:902-918） |
+| P1 | `isGlobalIP` 缺 IPv6 网段 | `internal/media/remote.go:153-168` | **已修复**：补齐 Teredo、`100::/64`、`64:ff9b:1::/48` 等网段（remote.go:190-224） |
+| P1 | 邮箱验证码先删后比，一次错即烧掉 | `internal/auth/email_verification.go:89-101,273` | **已修复**：`peekCode` 只读比对，成功后才 `dropCode`（email_verification.go:253-284） |
+| P1 | 遗留 pbkdf2 哈希登录后不回写为 argon2 | `internal/auth/auth.go:243-245,526` | **已修复**：`needsRehash` + 登录成功即回写（auth.go:255-268,549-566，auth/rehash_test.go） |
+| P1 | 取消/删除的配额台账备注与参考不同 | `internal/generator/service.go:596,615` | **已修复**：文案对齐（generator/store.go:819,864，quota_atomicity_test.go） |
+| P2 | SSR 验证码用 math/rand 且不读站点配置覆盖 | `internal/web/pages.go:92-100`、`handlers.go:527` | **已修复**：生成用 `auth.GenerateCaptchaCode`（crypto/rand），开关读 `site.login_captcha_enabled`；pages.go:94 的 math/rand 只用于按码绘制 SVG |
+| P2 | DB 出错时 IP 规则放行（参考为拒绝） | `internal/risk/service.go:82-86` | **已修复**：查库出错 fail-closed，拒绝并记日志（service.go:85-89） |
+| P2 | CSRF 未做 Origin/Referer 校验 | `internal/httpapi/session.go:302-324` | **已修复**：`VerifyCSRFOrigin` 接入校验链（session.go:326-365、middleware.go:256） |
+| P2 | 生产静态响应缺安全头 | `internal/httpapi/middleware.go:191-198` | **已修复**：非 DEBUG 补 `nosniff` / `Referrer-Policy` / `COOP`（middleware.go:352-362） |
+| P2 | 远程取图错误分类不可重试、exception_type 不同 | `internal/media/remote.go:29-49` | **已修复**：`RemoteImageError` 区分可重试/不可重试，`exception_type` 映射对齐（remote.go:18-44、generator/worker.go:318-336） |
+| P2 | 大写 scheme 被拒（参考接受） | `internal/media/remote.go:82-84` | **不成立**：`net/url.Parse` 本身会把 scheme 小写化（`url.Scheme = strings.ToLower(...)`），`HTTP://` 实际放行，两侧一致（verification-0.0.1.md:136-139） |
+| P2 | 缺少 `total_size` 文案不同 | `internal/media/uploads.go:79-82` | **已修复**：与 `size <= 0` 统一返回参考文案（uploads.go:78-86） |
+| P2 | 分片上传 EPUB 未读 `NOVELVIZ_UPLOAD_DIR` | `internal/media/uploads.go:519` | **已修复**：落盘读 `cfg.NovelvizUploadDir`（uploads.go:526、config.go:241） |
+| P2 | `TIME_ZONE` 非法时告警回落而非拒绝启动 | `internal/quota/service.go:459-470` | **已修复**：启动时 `time.LoadLocation` 失败即拒绝启动（main.go:67-70）；quota 内的回落只服务测试降级路径 |
+| P2 | 新增：已移除的安全开关被显式开启时应拒绝启动 | `internal/config/` | **已修复**：6 个开关非空即报错，`MINIO_ENDPOINT` 单独拒绝（config.go:217-232） |
 
-已修复（本会话）：44 字节 FIELD_CRYPT_KEY 二次派生、`v1:` 前缀、
-控制台密钥掩码格式。
+已修复（重写期）：44 字节 FIELD_CRYPT_KEY 二次派生、`v1:` 前缀、控制台密钥掩码格式。

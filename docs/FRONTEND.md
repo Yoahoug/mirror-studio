@@ -108,7 +108,8 @@ npm run build     # = build:css → build:workspace → build:console → build:
 
 - **唯一运行时**：Go 从 `go:embed all:static` 直接服务 `/static/**`；SPA 路由由
   Go 端按 1.x 的 URL 规则返回入口页。镜像内没有 node，也不需要。
-  服务始终只监听一个端口（`APP_PORT`，默认 8000），页面里不存在指向其它端口的
+  服务始终只监听一个端口（`APP_LISTEN`，未配置时按 `APP_PORT` 生成
+  `0.0.0.0:8000`，启动参数 `-listen` 可临时覆盖），页面里不存在指向其它端口的
   分支——容器只暴露这一个端口。
 - **前端热更新**：单端口的 `npm run local`（Vite middleware，见
   `docs/LOCAL-MODE.md`）；或按需单独起 `npm run dev:workspace` /
