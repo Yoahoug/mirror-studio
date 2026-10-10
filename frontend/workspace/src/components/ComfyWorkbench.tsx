@@ -374,6 +374,9 @@ export default function ComfyWorkbench({
   const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRestoringTask, setIsRestoringTask] = useState(false);
+  // 轮询护栏触发后停止跟踪：任务可能还在 ComfyUI 队列里，但界面不能一直装作
+  // 「生成中」——那样提交按钮会永久禁用。
+  const [trackingStopped, setTrackingStopped] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   // 显卡锁冲突：提交前发现别的任务在占显卡时弹窗，用户可等它完成或终止它。
   const [gpuBusy, setGpuBusy] = useState<GpuLockHolder | null>(null);
@@ -806,6 +809,7 @@ export default function ComfyWorkbench({
     setPreviewUrl("");
     setDownloadUrl("");
     setPreviewSize(null);
+    setTrackingStopped(false);
     setIsRestoringTask(true);
     fetchTaskDetail(selectedTaskNo)
       .then(async (detail) => {
@@ -864,6 +868,7 @@ export default function ComfyWorkbench({
       stopPolling();
       window.localStorage.removeItem(ACTIVE_TASK_KEY);
       setIsGenerating(false);
+      setTrackingStopped(true);
       if (message) addToastRef.current(message, "info");
     };
 
@@ -1065,6 +1070,7 @@ export default function ComfyWorkbench({
     window.localStorage.removeItem(ACTIVE_TASK_KEY);
     setIsGenerating(true);
     setIsRestoringTask(false);
+    setTrackingStopped(false);
     setTaskNo("");
     setPreviewUrl("");
     setDownloadUrl("");
@@ -1228,8 +1234,8 @@ export default function ComfyWorkbench({
     },
   }), [prompt, negativePrompt, generationMode, comfyModel, ratio, resolutionCode]);
 
-  const isWorking = isGenerating || runningStatuses.includes(taskStatus);
-  const hasTerminalState = terminalStatuses.includes(taskStatus) && !previewUrl;
+  const isWorking = isGenerating || (!trackingStopped && runningStatuses.includes(taskStatus));
+  const hasTerminalState = (terminalStatuses.includes(taskStatus) || trackingStopped) && !previewUrl;
   const isPreparingReference = generationMode === "image_to_image" && isUploadingReference;
   const referenceUploadPercent = referenceUploadProgress?.percent || 0;
   const hasReferenceImage = Boolean(referenceImageDataUrl || referenceImageName || referenceUploadToken);
@@ -1812,14 +1818,16 @@ export default function ComfyWorkbench({
                             <RefreshCcw className="h-9 w-9 text-gray-300" />
                           </div>
                           <p className="mt-4 text-sm font-bold text-gray-700">
-                            {taskStatus === "failed" ? "任务执行失败" : taskStatus === "canceled" ? "任务已取消" : "图片已生成，等待结果同步"}
+                            {taskStatus === "failed" ? "任务执行失败" : taskStatus === "canceled" ? "任务已取消" : trackingStopped ? "已停止同步任务状态" : "图片已生成，等待结果同步"}
                           </p>
                           <p className="mt-1 max-w-md px-6 text-xs leading-6 text-gray-400">
                             {taskStatus === "failed"
                               ? "这次提交没有拿到可展示图片，失败原因见左下方提示与历史记录。"
                               : taskStatus === "canceled"
                                 ? "该任务已经被终止，不会继续向 ComfyUI 轮询。"
-                                : "任务状态已完成，但图片文件仍在同步中，请稍候。"}
+                                : trackingStopped
+                                  ? "任务可能仍在 ComfyUI 队列里，历史记录里的状态才是准的；也可以直接重新提交。"
+                                  : "任务状态已完成，但图片文件仍在同步中，请稍候。"}
                           </p>
                         </>
                       ) : (

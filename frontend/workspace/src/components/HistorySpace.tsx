@@ -420,10 +420,18 @@ export default function HistorySpace({
       const result = await fetchTasks({ page, pageSize: 18, query: debouncedQuery });
       setTasks((current) => {
         if (page === 1) {
+          // 非静默（首次加载 / 换搜索词）直接用第一页替换；
+          // 静默刷新（8 秒轮询、任务完成事件）只更新第一页并保留已加载的后续页，
+          // 否则用户点出来的「加载更多」会在下一个轮询周期被冲掉。
+          if (!silent) return result.items;
+          const byTaskNo = new Map(result.items.map((task) => [task.task_no, task]));
+          const merged = current.map((task) => byTaskNo.get(task.task_no) ?? task);
+          const known = new Set(current.map((task) => task.task_no));
+          const fresh = result.items.filter((task) => !known.has(task.task_no));
+          const next = fresh.length ? [...fresh, ...merged] : merged;
           // Preserve array identity when nothing meaningful changed, so the grid
           // doesn't re-render / re-run entrance animations on every silent poll.
-          if (silent && sameTaskList(current, result.items)) return current;
-          return result.items;
+          return sameTaskList(current, next) ? current : next;
         }
         return [...current, ...result.items];
       });

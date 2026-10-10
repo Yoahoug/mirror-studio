@@ -391,8 +391,8 @@ export default function GenerationWorkbench({
   const [progress, setProgress] = useState(0);
   const [previewUrl, setPreviewUrl] = useState("");
   // 本次会话累积的成图（多格串行 / 历史恢复）：堆叠重放画廊的数据源。
-  const [galleryImages, setGalleryImages] = useState<Array<{ key: number; src: string }>>([]);
-  const [galleryIndex, setGalleryIndex] = useState(0);
+  // 索引与新图同一次更新落定，否则批量生成时「翻到最新」会算错位置。
+  const [gallery, setGallery] = useState<{ images: Array<{ key: number; src: string }>; index: number }>({ images: [], index: 0 });
   const [downloadUrl, setDownloadUrl] = useState("");
   const [isPlaceholderResult, setIsPlaceholderResult] = useState(false);
   const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
@@ -400,6 +400,9 @@ export default function GenerationWorkbench({
   const [isHelping, setIsHelping] = useState(false);
   const [isUploadingReference, setIsUploadingReference] = useState(false);
   const [isRestoringTask, setIsRestoringTask] = useState(false);
+  // 轮询护栏触发后停止跟踪：任务可能还在后台跑，但界面不能一直装作「生成中」——
+  // 那样提交按钮会永久禁用（此前只能刷新页面）。
+  const [trackingStopped, setTrackingStopped] = useState(false);
   const didMountRef = useRef(false);
   const pollingTimerRef = useRef<number | null>(null);
   const pollingAttemptRef = useRef(0);
@@ -598,8 +601,7 @@ export default function GenerationWorkbench({
     setTaskStatus("");
     setProgress(0);
     setPreviewUrl("");
-    setGalleryImages([]);
-    setGalleryIndex(0);
+    setGallery({ images: [], index: 0 });
     setDownloadUrl("");
     setPreviewSize(null);
     setIsGenerating(false);
@@ -671,13 +673,14 @@ export default function GenerationWorkbench({
       setDownloadUrl(resolvedDownload || resolvedPreview);
       hasRenderablePreview = Boolean(resolvedPreview);
       setProgress(100);
-      // 堆叠重放：成图按时间顺序追加（同 key 去重，轮询重复回调不会堆出重影）。
+      // 堆叠重放：成图按时间顺序追加并把焦点落到新图（同 src 去重，
+      // 轮询重复回调不会堆出重影，也不会把索引推歪）。
       if (resolvedPreview) {
-        setGalleryImages((current) => {
-          if (current.some((item) => item.src === resolvedPreview)) return current;
-          return [...current, { key: firstImage.id, src: resolvedPreview }];
+        setGallery((current) => {
+          if (current.images.some((item) => item.src === resolvedPreview)) return current;
+          const images = [...current.images, { key: firstImage.id, src: resolvedPreview }];
+          return { images, index: images.length - 1 };
         });
-        setGalleryIndex((current) => current + 1);
       }
       if (hasRenderablePreview && completionToastTaskRef.current !== detail.task_no) {
         completionToastTaskRef.current = detail.task_no;
@@ -815,6 +818,7 @@ export default function GenerationWorkbench({
     setPreviewUrl("");
     setDownloadUrl("");
     setPreviewSize(null);
+    setTrackingStopped(false);
     setIsRestoringTask(true);
     fetchTaskDetail(selectedTaskNo)
       .then(async (detail) => {
@@ -876,6 +880,8 @@ export default function GenerationWorkbench({
       stopPolling();
       window.localStorage.removeItem(ACTIVE_TASK_KEY);
       setIsGenerating(false);
+      // 停止跟踪 ≠ 任务结束：把「生成中」的界面状态收回来，否则提交按钮会一直禁用。
+      setTrackingStopped(true);
       if (message) {
         addToastRef.current(message, "info");
       }
@@ -1000,17 +1006,42 @@ export default function GenerationWorkbench({
     }
     // 多格对比：本地渠道串行执行，逐张提交并等完成后再下一张（batchCount 来自助手的参数计划或按钮区）。
     const total = Math.max(1, Math.min(4, Math.round(batchCount)));
+    let sessionId = beginTaskSession();
+    let submittedTaskNo: string | null = null;
     for (let index = 0; index < total; index += 1) {
       if (index > 0) {
+        // 用户中途又点了「立即生成」时，本轮批量已经过时：别再往服务器补提交。
+        if (!isCurrentTaskSession(sessionId)) return;
         addToast(`开始生成第 ${index + 1}/${total} 张`);
+        // 等这一张进终态再提交下一张：每轮的轮询会在新任务开始时被停掉，
+        // 提前提交会让前几张既看不到进度也进不了堆叠画廊（只能去历史里翻）。
+        await waitForTaskSettled(submittedTaskNo, sessionId);
+        if (!isCurrentTaskSession(sessionId)) return;
+        sessionId = beginTaskSession();
       }
-      await runSingleGeneration();
+      submittedTaskNo = await runSingleGeneration(sessionId);
+      if (!submittedTaskNo) return;
     }
   };
 
-  const runSingleGeneration = async () => {
+  /** 串行批量用：只读任务状态，界面上的进度仍由轮询 effect 落地。 */
+  const waitForTaskSettled = async (pendingTaskNo: string, sessionId: number) => {
+    const deadline = Date.now() + MAX_POLL_LIFETIME_MS;
+    for (;;) {
+      if (!isCurrentTaskSession(sessionId)) return;
+      if (Date.now() >= deadline) return;
+      try {
+        const detail = await fetchTaskDetail(pendingTaskNo);
+        if (terminalStatuses.includes(detail.status)) return;
+      } catch {
+        // 网络抖动由 deadline 兜底，不在这里重复记错误。
+      }
+      await waitFor(1500);
+    }
+  };
+
+  const runSingleGeneration = async (sessionId: number): Promise<string | null> => {
     const resolvedSizeCode = sizeCodeFromRatio(ratio, resolutionCode);
-    const sessionId = beginTaskSession();
     stopPolling();
     pollingAttemptRef.current = 0;
     pollingErrorCountRef.current = 0;
@@ -1019,9 +1050,9 @@ export default function GenerationWorkbench({
     window.localStorage.removeItem(ACTIVE_TASK_KEY);
     setIsGenerating(true);
     setIsRestoringTask(false);
+    setTrackingStopped(false);
     setTaskNo("");
     setPreviewUrl("");
-    setGalleryIndex(0);
     setDownloadUrl("");
     setPreviewSize(null);
     setTaskStatus("queued");
@@ -1134,13 +1165,15 @@ export default function GenerationWorkbench({
         addToast("生图任务正在执行");
         onGenerationSubmittedRef.current?.();
       }
+      return isCurrentTaskSession(sessionId) ? detail.task_no : null;
     } catch (error: any) {
-      if (!isCurrentTaskSession(sessionId)) return;
+      if (!isCurrentTaskSession(sessionId)) return null;
       if (error instanceof AuthRequiredError) {
         onOpenAuth("login");
       } else {
         addToast(error.message || "生图任务提交失败", "error");
       }
+      return null;
     } finally {
       if (isCurrentTaskSession(sessionId) && !submissionAccepted) {
         setIsGenerating(false);
@@ -1234,8 +1267,8 @@ export default function GenerationWorkbench({
   const activeQualityLabel = qualityOptions.find((item) => item.value === qualityCode)?.label || "自动";
   const currentStyle = styles.find((item) => item.value === styleCode) || styles[0];
   const isSyncingResult = taskStatus === "succeeded" && !previewUrl && !isRestoringTask;
-  const hasTerminalState = terminalStatuses.includes(taskStatus);
-  const isWorking = isGenerating || ((runningStatuses.includes(taskStatus) || isSyncingResult) && !previewUrl);
+  const hasTerminalState = terminalStatuses.includes(taskStatus) || trackingStopped;
+  const isWorking = isGenerating || (!trackingStopped && (runningStatuses.includes(taskStatus) || isSyncingResult) && !previewUrl);
   const isPreparingReference = generationMode === "image_to_image" && isUploadingReference && !isWorking;
   const frameAspectRatio = previewSize ? previewSize.width / previewSize.height : getAspectRatioFromSizeCode(sizeCode);
   // 竖向比例的正确打开方式：容器宽度由「可用高度 × 比例」反推（width:auto + aspect-ratio + max-h），
@@ -1704,9 +1737,9 @@ export default function GenerationWorkbench({
                   {previewUrl ? (
                     <div className="flex h-full w-full items-center justify-center p-3 sm:p-4">
                       <StackGallery
-                        images={galleryImages.length > 1 ? galleryImages : [{ key: 0, src: previewUrl }]}
-                        index={galleryImages.length > 1 ? Math.min(galleryIndex, galleryImages.length - 1) : 0}
-                        onIndexChange={setGalleryIndex}
+                        images={gallery.images.length > 1 ? gallery.images : [{ key: 0, src: previewUrl }]}
+                        index={gallery.images.length > 1 ? Math.min(gallery.index, gallery.images.length - 1) : 0}
+                        onIndexChange={(index) => setGallery((current) => ({ ...current, index }))}
                         className="h-full w-full"
                       />
                     </div>
@@ -1744,14 +1777,16 @@ export default function GenerationWorkbench({
                             <RefreshCcw className="h-9 w-9 text-gray-300" />
                           </div>
                           <p className="mt-4 text-sm font-bold text-gray-700">
-                            {taskStatus === "failed" ? "任务执行失败" : taskStatus === "canceled" ? "任务已取消" : "图片已生成，等待结果同步"}
+                            {taskStatus === "failed" ? "任务执行失败" : taskStatus === "canceled" ? "任务已取消" : trackingStopped ? "已停止同步任务状态" : "图片已生成，等待结果同步"}
                           </p>
                           <p className="mt-1 max-w-md px-6 text-xs leading-6 text-gray-400">
                             {taskStatus === "failed"
                               ? "这次提交没有拿到可展示图片，请检查历史记录中的失败信息后重新提交。"
                               : taskStatus === "canceled"
                                 ? "该任务已经被终止，不会再继续向上游轮询。"
-                                : "任务状态已完成，但图片文件仍在同步中，请稍候。"}
+                                : trackingStopped
+                                  ? "任务可能仍在后台执行，历史记录里的状态才是准的；也可以直接重新提交。"
+                                  : "任务状态已完成，但图片文件仍在同步中，请稍候。"}
                           </p>
                         </>
                       ) : (

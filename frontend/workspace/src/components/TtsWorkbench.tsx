@@ -224,6 +224,8 @@ export default function TtsWorkbench({
   const [taskLoadS, setTaskLoadS] = useState<number | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRestoringTask, setIsRestoringTask] = useState(false);
+  // 轮询护栏触发后停止跟踪：引擎可能还在合成，但界面不能一直装作「合成中」。
+  const [trackingStopped, setTrackingStopped] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isReleasing, setIsReleasing] = useState(false);
   const [isPreloading, setIsPreloading] = useState(false);
@@ -529,6 +531,7 @@ export default function TtsWorkbench({
     const realTaskNo = selectedTaskNo.startsWith("tts:") ? selectedTaskNo.slice(4) : selectedTaskNo;
     let ignore = false;
     const sessionId = beginTaskSession();
+    setTrackingStopped(false);
     setIsRestoringTask(true);
     fetchTtsTaskDetail(realTaskNo)
       .then(async (detail) => {
@@ -571,6 +574,7 @@ export default function TtsWorkbench({
       stopPolling();
       window.localStorage.removeItem(ACTIVE_TASK_KEY);
       setIsGenerating(false);
+      setTrackingStopped(true);
       if (message) addToastRef.current(message, "info");
     };
 
@@ -909,6 +913,7 @@ export default function TtsWorkbench({
     window.localStorage.removeItem(ACTIVE_TASK_KEY);
     setIsGenerating(true);
     setIsRestoringTask(false);
+    setTrackingStopped(false);
     setTaskNo("");
     setOutputs([]);
     setTaskWarnings([]);
@@ -921,7 +926,18 @@ export default function TtsWorkbench({
 
     try {
       const task = await submitTask(payload, sessionId);
-      if (!task) return;
+      if (!task) {
+        // 两条路都会走到这里：槽位冲突弹了确认框（用户可能直接关掉），
+        // 或者这次提交已被更新的会话顶掉。前者什么都没提交，不能停在「合成中」。
+        if (isCurrentTaskSession(sessionId)) {
+          setIsGenerating(false);
+          setTaskNo("");
+          setTaskStatus("");
+          setProgress(0);
+          window.localStorage.removeItem(ACTIVE_TASK_KEY);
+        }
+        return;
+      }
       await applyTaskDetail(task, sessionId);
       if (isCurrentTaskSession(sessionId) && !task.outputs?.length) {
         addToast("TTS 任务已提交，正在排队执行");
@@ -942,7 +958,7 @@ export default function TtsWorkbench({
     }
   };
 
-  const isWorking = isGenerating || runningStatuses.includes(taskStatus);
+  const isWorking = isGenerating || (!trackingStopped && runningStatuses.includes(taskStatus));
   const instanceEngine = ttsStatus?.instance?.engine || "";
   /** 常驻 = 启动时 idle_timeout=0（永不退出）或本进程保活顶住空闲超时。 */
   const residentInstance = Boolean(instanceEngine)
@@ -1650,6 +1666,16 @@ export default function TtsWorkbench({
                             />
                           </div>
                         </div>
+                      </>
+                    ) : trackingStopped ? (
+                      <>
+                        <div className="grid h-20 w-20 place-items-center rounded-[1.5rem] bg-white shadow-sm">
+                          <RefreshCcw className="h-9 w-9 text-gray-300" />
+                        </div>
+                        <p className="mt-4 text-sm font-bold text-gray-700">已停止同步合成状态</p>
+                        <p className="mt-1 max-w-md px-6 text-xs leading-6 text-gray-400">
+                          引擎可能还在后台合成，历史记录里的状态才是准的；产物出来后会记录在历史里。
+                        </p>
                       </>
                     ) : (
                       <>
