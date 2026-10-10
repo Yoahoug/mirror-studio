@@ -50,7 +50,7 @@ tag 消息即该版本的更新说明。
 - **缓存**：构建使用 GitHub Actions 缓存（`type=gha, mode=max`），
   前端 `npm ci`、Go 模块下载与各构建段都会命中，重复构建显著加快。
 - **部署端**：`docker-compose.yml` 默认引用该镜像（`IMAGE_TAG` 可覆盖标签）；
-  私有包首次拉取需要 `docker login ghcr.io`。
+  包是公开的，`docker compose pull` 无需登录（改成私有包则需 `docker login ghcr.io`）。
 
 ## 部署形态（0.0.1）
 
