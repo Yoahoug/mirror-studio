@@ -12,6 +12,7 @@ COPY frontend/shared/ ./frontend/shared/
 COPY frontend/workspace/ ./frontend/workspace/
 COPY frontend/console/ ./frontend/console/
 COPY frontend/tsconfig.json ./frontend/
+COPY scripts/check-build-contract.mjs ./scripts/
 COPY static_src/ ./static_src/
 COPY tailwind.config.js postcss.config.js ./
 RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000

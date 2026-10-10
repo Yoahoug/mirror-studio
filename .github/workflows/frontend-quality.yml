@@ -1,0 +1,35 @@
+# 前端质量门禁：lint（tsc --noEmit）+ build（含产物契约校验）。
+#
+# 背景：container.yml 只在打 v* 标签时构建镜像，普通提交此前没有任何检查，
+# 带病的 lint/build 会一路流进发布流程。这个 workflow 在 push/PR 上先行拦截。
+#
+# 门禁内容：
+#   1. npm ci 干净安装（验证 lockfile 与依赖清单一致，死依赖清理后不被悄悄引回）
+#   2. npm run lint —— TypeScript 全工程类型检查
+#   3. npm run build —— 全部产物构建 + scripts/check-build-contract.mjs 契约校验
+name: 前端质量门禁
+
+on:
+  push:
+    branches: ["main", "refactor/**", "feature/**"]
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖（干净 CI 安装）
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run lint
+
+      - name: 构建（含产物契约校验）
+        run: npm run build
