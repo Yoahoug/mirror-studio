@@ -72,6 +72,11 @@ export interface GenerationPayload {
   topic_id?: number;
   client_request_id?: string;
   wait_seconds?: number;
+  /** 仅本地开发者模式：engine="comfy" 时任务走本机 ComfyUI（对应「Comfy 生图」板块）。 */
+  engine?: "comfy";
+  comfy_model?: string;
+  seed?: number;
+  steps?: number;
 }
 
 export interface ReferenceUploadPayload {
@@ -422,6 +427,11 @@ export interface GenerationTask {
   style_code?: string;
   size_code?: string;
   quality_code?: "auto" | "low" | "medium" | "high";
+  /** 仅本地开发者模式：engine="comfy" 表示任务由本机 ComfyUI 执行。 */
+  engine?: string;
+  comfy_model?: string;
+  steps?: number | null;
+  seed?: number | null;
   reference_image_name?: string;
   reference_image_attached?: boolean;
   reference_image_data_url?: string;
@@ -895,6 +905,76 @@ export async function deleteGenerationTask(taskNo: string): Promise<void> {
 
 export async function deleteNovelTask(taskId: number): Promise<void> {
   await apiRequest<any>(`/api/novelviz/tasks/${taskId}`, { method: "DELETE" });
+}
+
+// ── Comfy Local Generation（仅本地开发者模式：线上 Go 服务没有这些接口）──
+
+export interface ComfyModelSpec {
+  id: string;
+  label: string;
+  note: string;
+  unet: string;
+  steps_mode: "fixed" | "selectable";
+  default_steps: number | null;
+  max_steps: number | null;
+}
+
+export interface ComfyStats {
+  comfyui_version: string;
+  ram_total: number;
+  ram_free: number;
+  devices: Array<{ name: string; vram_total: number; vram_free: number }>;
+}
+
+export interface ComfyStatus {
+  base_url: string;
+  running: boolean;
+  error: string;
+  stats: ComfyStats | null;
+  start_command_configured: boolean;
+  timeout_ms: number;
+  free_memory: boolean;
+  models: ComfyModelSpec[];
+}
+
+export interface ComfyStartResult {
+  started: boolean;
+  already_running: boolean;
+  status: ComfyStatus;
+  /** 启动后立刻从 ComfyUI 日志里抽到的异常摘要（没有则为空字符串）。 */
+  comfy_issues?: string;
+}
+
+export interface ComfyIssue {
+  level: "error" | "warning";
+  message: string;
+  at: string;
+}
+
+export interface ComfyLogReport {
+  available: boolean;
+  total_lines: number;
+  errors: number;
+  warnings: number;
+  issues: ComfyIssue[];
+  error?: string;
+}
+
+export async function fetchComfyStatus(): Promise<ComfyStatus> {
+  return apiRequest<ComfyStatus>("/api/comfy/status");
+}
+
+/** 读取 ComfyUI 服务日志里最近的 ERROR / WARNING（自定义节点、Manager 联网失败等）。 */
+export async function fetchComfyLog(limit = 8): Promise<ComfyLogReport> {
+  return apiRequest<ComfyLogReport>(`/api/comfy/log?limit=${encodeURIComponent(String(limit))}`);
+}
+
+export async function startComfy(): Promise<ComfyStartResult> {
+  return apiRequest<ComfyStartResult>("/api/comfy/start", { method: "POST" });
+}
+
+export async function interruptComfy(): Promise<{ interrupted: boolean }> {
+  return apiRequest<{ interrupted: boolean }>("/api/comfy/interrupt", { method: "POST" });
 }
 
 // ── Novel Scene Visualization ──

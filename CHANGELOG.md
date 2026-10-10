@@ -7,6 +7,14 @@
 
 ### Added
 
+- 本地开发者模式的「Comfy 生图」板块（仅本地模式，线上不暴露）：工作台侧边栏新增入口，
+  直连本机 ComfyUI（`/api/comfy/*` 只由本地 Node 服务实现，Go 服务没有这些接口），
+  Comfy 设置界面可一键启动 ComfyUI 并查看状态与显存；
+  提供 6 步蒸馏、官方 Qwen-Image 2.1、无审查 NoctQ V4 三套工作流（模板随仓库
+  `scripts/localapi/comfy/workflows/` 版本化），支持文生图/图生图、步数与种子；
+  任务复用既有任务管线（状态、取消、下载、历史记录，历史里点开回到该板块）。
+  配置项：`COMFY_BASE_URL` / `COMFY_START_CMD` / `COMFY_TIMEOUT_MS` / `COMFY_FREE_MEMORY`
+  （详见 `docs/LOCAL-MODE.md`）
 - 本地开发者模式 `npm run local`：无需数据库、管理员、登录与注册，固定本地账号自动登录，
   只暴露工作台与管理台；未配置渠道时由本地合成占位图与本地模拟回复，
   生成结果落在 `local-data/`（详见 `docs/LOCAL-MODE.md`）

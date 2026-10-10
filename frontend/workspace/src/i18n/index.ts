@@ -2,6 +2,7 @@ export const translations = {
   zh: {
     sidebar: {
       create: "开始创作",
+      comfy: "Comfy 生图",
       novelviz: "小说可视化",
       newChat: "新生图",
       history: "历史记录",
@@ -13,6 +14,7 @@ export const translations = {
     },
     header: {
       creationCore: "生图工作台 (Image Studio)",
+      comfy: "Comfy 生图 (ComfyUI Studio)",
       novelviz: "小说场景可视化 (Novel Cinema)",
       history: "历史记录 (History)",
       brand: "绘镜",
@@ -141,6 +143,7 @@ export const translations = {
   en: {
     sidebar: {
       create: "Start Creation",
+      comfy: "Comfy Studio",
       novelviz: "Novel Cinema",
       newChat: "New Image",
       history: "History",
@@ -152,6 +155,7 @@ export const translations = {
     },
     header: {
       creationCore: "Image Studio",
+      comfy: "Comfy Studio (ComfyUI)",
       novelviz: "Novel Cinema",
       history: "History",
       brand: "Mirror Lens",

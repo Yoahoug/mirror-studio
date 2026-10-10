@@ -10,6 +10,7 @@
 import http from 'node:http';
 
 import {DATA_DIR, HOST, IMAGE_SIZE, LLM, PORT, PROVIDER, STORE_FILE, llmConfigured, providerConfigured} from './config.mjs';
+import * as comfyApi from './comfy.mjs';
 import {handleRequest, isApiPath, reportListenError} from './server.mjs';
 import {createLocalWebServer} from './web.mjs';
 
@@ -39,6 +40,9 @@ const server = http.createServer((req, res) => {
 
 web = await createLocalWebServer(server);
 
+// 启动时探一次 ComfyUI：板块只有本地模式才存在，这里给个一眼可见的状态。
+const comfy = await comfyApi.comfyStatus();
+
 server.on('error', reportListenError);
 server.listen(PORT, HOST, () => {
   const origin = `http://${HOST}:${PORT}`;
@@ -51,6 +55,7 @@ server.listen(PORT, HOST, () => {
   console.log(`  数据目录      ${DATA_DIR}`);
   console.log(`  生图渠道      ${providerConfigured ? `真实渠道 ${PROVIDER.modelName}` : '本地占位图（零配置可用）'}`);
   console.log(`  对话渠道      ${llmConfigured ? `真实渠道 ${LLM.modelName}` : '本地模拟回复（零配置可用）'}`);
+  console.log(`  Comfy 生图    ${comfy.running ? `ComfyUI 运行中（${comfy.base_url}）` : `ComfyUI 未运行（${comfy.base_url}；在工作台「Comfy 生图」板块可一键启动）`}`);
   console.log(`  图片尺寸      ${IMAGE_SIZE}`);
   console.log('  ────────────────────────────────────────────────');
   console.log('  无数据库、无登录、无注册；删除 local-data/ 即可重置。');

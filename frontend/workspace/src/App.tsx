@@ -4,6 +4,7 @@ import TopToolbar from "./components/TopToolbar";
 import Sidebar from "./components/Sidebar";
 import HistorySpace from "./components/HistorySpace";
 import GenerationWorkbench from "./components/GenerationWorkbench";
+import ComfyWorkbench from "./components/ComfyWorkbench";
 import NovelVisualizationSpace from "./components/NovelVisualizationSpace";
 import ReleaseNotesModal, { type ReleaseInfo } from "./components/ReleaseNotesModal";
 import SettingsModal, { type SettingsTabId } from "./components/SettingsModal";
@@ -13,7 +14,7 @@ import { ToastContainer, ToastType } from "./components/Toast";
 import { Language, translations } from "./i18n";
 
 const RELEASE_DISMISS_PREFIX = "mirror.release.dismissed:";
-const WORKSPACE_TABS = new Set(["create", "novelviz", "history"]);
+const WORKSPACE_TABS = new Set(["create", "comfy", "novelviz", "history"]);
 
 function readReleaseInfo(): ReleaseInfo | null {
   const el = document.getElementById("workspace-release-data");
@@ -51,6 +52,7 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: string, message: string, type: ToastType }[]>([]);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [selectedTaskNo, setSelectedTaskNo] = useState("");
+  const [selectedComfyTaskNo, setSelectedComfyTaskNo] = useState("");
   const [selectedNovelTaskId, setSelectedNovelTaskId] = useState<number | null>(null);
   const [workbenchResetSignal, setWorkbenchResetSignal] = useState(0);
   const [novelvizResetSignal, setNovelvizResetSignal] = useState(0);
@@ -63,6 +65,9 @@ export default function App() {
   const initialCaptchaSvg = rootEl?.dataset.captchaSvg || "";
   const initialIsAuthenticated = rootEl?.dataset.authenticated === "1";
   const initialNextPath = new URLSearchParams(window.location.search).get("next") || "";
+  // 「Comfy 生图」板块只在本地开发者模式（npm run local 的入口文件带 data-mode="local"）
+  // 出现；线上 Go 模板没有这个标记，所以线上既看不到入口也不会发任何 Comfy 请求。
+  const comfyEnabled = rootEl?.dataset.mode === "local";
 
   const t = translations[language];
 
@@ -71,6 +76,7 @@ export default function App() {
   const [accountSummary, setAccountSummary] = useState<AccountSummaryResponse | null>(null);
 
   const setActiveTab = (tab: string) => {
+    if (tab === "comfy" && !comfyEnabled) return;
     const nextTab = WORKSPACE_TABS.has(tab) ? tab : "create";
     setActiveTabState(nextTab);
   };
@@ -90,6 +96,16 @@ export default function App() {
         return;
       }
     }
+    if (taskNo.startsWith("comfy:")) {
+      const comfyTaskNo = taskNo.slice("comfy:".length);
+      if (comfyTaskNo && comfyEnabled) {
+        setSelectedComfyTaskNo(comfyTaskNo);
+        setSelectedTaskNo("");
+        setActiveTab("comfy");
+        return;
+      }
+    }
+    setSelectedComfyTaskNo("");
     setSelectedTaskNo(taskNo);
     setActiveTab("create");
   };
@@ -223,12 +239,14 @@ export default function App() {
         setIsCollapsed={setIsCollapsed} 
         onNewConversation={() => {
           setSelectedTaskNo("");
+          setSelectedComfyTaskNo("");
           setWorkbenchResetSignal((value) => value + 1);
           setActiveTab("create");
           addToast(t.toasts.newChat);
         }}
         onOpenNovelVisualization={openNovelVisualization}
         releaseVersion={releaseInfo?.version}
+        showComfy={comfyEnabled}
         t={t.sidebar}
       />
 
@@ -236,7 +254,7 @@ export default function App() {
         <header className="z-40 flex flex-col gap-3 border-b border-gray-100 bg-white/85 px-4 py-3 backdrop-blur-md transition-all sm:px-6 md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
           <div className="flex min-w-0 items-center gap-2">
             <h2 className="text-sm font-medium text-gray-500 uppercase tracking-widest italic leading-none">
-              {activeTab === 'create' ? t.header.creationCore : activeTab === 'history' ? t.header.history : activeTab === 'novelviz' ? t.header.novelviz : t.header.brand}
+              {activeTab === 'create' ? t.header.creationCore : activeTab === 'comfy' ? t.header.comfy : activeTab === 'history' ? t.header.history : activeTab === 'novelviz' ? t.header.novelviz : t.header.brand}
             </h2>
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
           </div>
@@ -271,6 +289,18 @@ export default function App() {
                 addToast={addToast}
                 t={t.history}
                 onOpenTask={openHistoryTask}
+              />
+            ) : activeTab === 'comfy' && comfyEnabled ? (
+              <ComfyWorkbench
+                key="comfy-workbench"
+                isAuthenticated={isAuthenticated}
+                selectedModel={selectedModel}
+                chatModels={chatModels}
+                onOpenAuth={openAuth}
+                addToast={addToast}
+                selectedTaskNo={selectedComfyTaskNo}
+                resetSignal={workbenchResetSignal}
+                onGenerationSubmitted={() => fetchAccountSummary().then(applyAccountSummary).catch(() => {})}
               />
             ) : activeTab === 'novelviz' ? (
               <NovelVisualizationSpace

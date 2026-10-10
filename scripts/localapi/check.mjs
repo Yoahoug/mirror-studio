@@ -255,12 +255,38 @@ async function checkConsole() {
   assert(channels.body.data.length >= 2, '渠道列表包含生图与对话渠道');
 }
 
+// ── 5. Comfy 本地生图板块（本地专属接口；ComfyUI 未运行时也要能返回状态）──
+async function checkComfy() {
+  console.log('\n[5] Comfy 生图板块接口');
+  const status = await api('/api/comfy/status');
+  assert(status.body.code === 0, '查询 ComfyUI 状态成功');
+  const data = status.body.data;
+  assert(typeof data.running === 'boolean', `ComfyUI 运行状态可读（running=${data.running}）`);
+  assert(typeof data.base_url === 'string' && data.base_url.length > 0, `ComfyUI 地址：${data.base_url}`);
+  assert(
+    Array.isArray(data.models) && data.models.length === 3 && data.models.every((model) => model.id && model.label),
+    `模型清单包含 ${data.models?.length} 个模型（${data.models?.map((model) => model.id).join(', ')}）`,
+  );
+  assert(typeof data.start_command_configured === 'boolean', '启动命令配置状态可读');
+
+  const log = await api('/api/comfy/log?limit=5');
+  assert(log.body.code === 0, '读取 ComfyUI 日志接口成功');
+  assert(typeof log.body.data.available === 'boolean', `日志可读性可判断（available=${log.body.data.available}）`);
+  if (log.body.data.available) {
+    assert(
+      Array.isArray(log.body.data.issues) && log.body.data.issues.length <= 5,
+      `日志异常抽取正常（错误 ${log.body.data.errors} / 警告 ${log.body.data.warnings}）`,
+    );
+  }
+}
+
 async function main() {
   console.log(`本地模式自检：${BASE}`);
   await checkReferenceUpload();
   await checkChat();
   await checkNovel();
   await checkConsole();
+  await checkComfy();
   console.log('\n全部自检通过 ✅');
 }
 

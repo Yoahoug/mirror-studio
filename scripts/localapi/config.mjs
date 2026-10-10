@@ -79,4 +79,15 @@ export const LLM = {
 export const providerConfigured = Boolean(PROVIDER.baseURL && PROVIDER.modelName && PROVIDER.apiKey);
 export const llmConfigured = Boolean(LLM.baseURL && LLM.modelName && LLM.apiKey);
 
+// ComfyUI 本地生图（工作台的「Comfy 生图」板块，仅本地模式存在）。
+// 契约见桌面 Comfy\doc：原生接口在 8188，工作流模板随仓库放在 comfy/workflows/。
+export const COMFY = {
+  baseURL: env('COMFY_BASE_URL', 'http://127.0.0.1:8188').replace(/\/+$/, ''),
+  // 板块里「启动 ComfyUI」按钮执行的命令：可以是脚本路径（含空格也能用）或一段 shell 命令；留空则按钮提示手动启动。
+  startCmd: env('COMFY_START_CMD', ''),
+  timeoutMs: Math.max(30000, envInt('COMFY_TIMEOUT_MS', 15 * 60 * 1000)),
+  // 每张图前先 POST /free 卸载模型（显存紧张时打开；会带来每张重新加载权重的耗时）。
+  freeMemory: envInt('COMFY_FREE_MEMORY', 0) === 1,
+};
+
 export const CHUNK_SIZE = 4 * 1024 * 1024;

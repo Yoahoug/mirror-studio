@@ -45,6 +45,7 @@ npm run local        # 单端口启动：本地 API + 工作台 + 管理台
 | 图片 | `local-data/media/`，写入即落盘 | 同左，`MEDIA_ROOT` |
 | 出图 | 未配置渠道时本地合成占位图 | `PROVIDER_*` 真实渠道 |
 | 对话/小说分析 | 未配置渠道时本地模拟 | `LLM_*` / `NOVELVIZ_*` 真实渠道 |
+| Comfy 生图 | 有：本地工作台直连本机 ComfyUI（`/api/comfy/*`） | 无：不暴露入口，也没有这些接口 |
 | 后端进程 | Node 零依赖脚本（`scripts/localapi/`） | Go 二进制，内嵌迁移与 worker |
 
 本地模式只实现了工作台与管理台需要的那部分接口（约 35 个），
@@ -83,6 +84,51 @@ npm run local
 渠道变量名与线上 Go 服务一致，可以直接从 `.env` 复制过来。
 没配 LLM 时：工作台对话会返回以「【本地模拟回复】」开头的本地建议，
 小说场景分析会按正文段落顺序抽取场景，并在事件日志里写明「本地抽取」。
+
+## Comfy 生图板块（仅本地模式）
+
+本地工作台侧边栏里还有一个「Comfy 生图」板块：直接调用本机的 ComfyUI（默认
+`http://127.0.0.1:8188`）出图，工作流与参数契约来自 Comfy 工作台的既有资产。
+**它只在本地开发者模式出现**：板块开关来自工作台入口文件上的 `data-mode="local"`，
+线上 Go 的 SSR 模板不带这个标记，`/api/comfy/*` 也只由本地 API 实现，
+所以线上既没有入口也不会调用本机进程。
+
+首次使用：
+
+```bash
+# 在 .env.local 里配置启动命令（可以指向启动脚本的完整路径；留空则手动启动）
+COMFY_START_CMD=D:\Users\25657\Desktop\Comfy\start-comfyui.bat
+npm run local                       # 启动后打开工作台 → 侧边栏「Comfy 生图」
+```
+
+进入板块后点右上角「Comfy 设置」→「启动 ComfyUI」：命令在你本机后台执行，
+日志写 `local-data/comfy-start.log`；冷启动要加载模型，通常 1-2 分钟才就绪，
+界面会持续探测 `GET /system_stats` 并显示内存/显存读数。
+
+板块要点：
+
+- **三个模型**：6 步蒸馏（默认，约 15 秒/张，固定调度不可改步数）、官方
+  Qwen-Image 2.1（CFG 1，25/35 步）、无审查 NoctQ V4（CFG 3，25/35 步）。
+  对应的工作流模板随仓库放在 `scripts/localapi/comfy/workflows/`。
+- **图生图**：沿用文生图工作流就地改造（参考图接进编码器，采样 latent 换成参考图
+  编码结果），出图比例跟随参考图、与所选比例无关；当前板块支持 1 张参考图
+  （ComfyUI 契约上限 16 张）。
+- **任务管线与线上一致**：状态、进度、取消、下载、历史记录全部复用同一套任务模型；
+  Comfy 任务会标记 `engine=comfy`，在历史里点开会回到本板块恢复上下文，
+  取消任务会给 ComfyUI 发 `/queue delete` 与 `/interrupt`。
+- **失败信息**：ComfyUI 的原始报错（`exception_message`）会原样显示在任务里，
+  不会只报「任务失败」。
+- **相关变量**：`COMFY_BASE_URL`、`COMFY_START_CMD`、`COMFY_TIMEOUT_MS`（默认 15 分钟）、
+  `COMFY_FREE_MEMORY`（默认 0；显存紧张时设 1，会在每张前卸载模型）。
+
+已知边界：
+
+- 板块只负责「调用 + 启动」，**不会自动拉起** ComfyUI：启动按钮是唯一入口，
+  也可以自己先运行 `start-comfyui.bat` 再回来点「刷新状态」。
+- 没有「停止 ComfyUI」按钮：任务取消走 `/interrupt`；要停进程用桌面
+  Comfy 文件夹里的 `stop-all.bat`，或按文档里的端口排查命令结束进程。
+- 本机显存/页面文件要求沿用 Comfy 契约：连续出图不稳时优先调大页面文件，
+  再考虑打开 `COMFY_FREE_MEMORY=1`。
 
 ## 常用命令
 

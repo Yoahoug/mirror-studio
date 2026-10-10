@@ -63,6 +63,11 @@ function isNovelTask(task: GenerationTask) {
   return task.task_kind === "novelviz" || task.generation_mode === "novel_visualization" || task.task_no.startsWith("novelviz:");
 }
 
+// Comfy 任务（仅本地模式）点开后要回到「Comfy 生图」板块，用前缀和小说任务走同一套约定。
+function taskOpenKey(task: GenerationTask) {
+  return task.engine === "comfy" ? `comfy:${task.task_no}` : task.task_no;
+}
+
 function progressClass(status: string) {
   if (status === "failed") return "bg-red-400";
   if (status === "succeeded") return "bg-emerald-500";
@@ -182,7 +187,7 @@ function HistoryModals({
               <span>点击卡片可回到对应创作会话</span>
               <button
                 type="button"
-                onClick={() => onOpenTask?.(preview.task.task_no)}
+                onClick={() => onOpenTask?.(taskOpenKey(preview.task))}
                 className="rounded-2xl bg-black px-4 py-2 font-bold text-white transition hover:bg-gray-800"
               >
                 进入会话
@@ -712,7 +717,7 @@ export default function HistorySpace({
                       initial={{ opacity: 0, y: 16 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: Math.min(index, 12) * 0.025 }}
-                      onClick={() => onOpenTask?.(task.task_no)}
+                      onClick={() => onOpenTask?.(taskOpenKey(task))}
                       className="group cursor-pointer overflow-hidden rounded-[1.75rem] border border-gray-100 bg-white shadow-sm transition hover:-translate-y-1 hover:border-gray-200 hover:shadow-xl hover:shadow-black/5"
                     >
                       <div className="relative aspect-[4/3] bg-gray-50">

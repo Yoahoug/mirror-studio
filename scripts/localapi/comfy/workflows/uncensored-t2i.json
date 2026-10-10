@@ -1,0 +1,93 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "NoctQ_V4_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "TextEncodeQwenImage21",
+    "inputs": {
+      "prompt": "A candid full-body photograph of a young woman in her mid-twenties with long wavy black hair, faint freckles across her nose and a calm, level gaze into the camera. She wears an oversized cream ribbed-knit sweater, straight dark blue jeans and white canvas sneakers, standing with both hands in her pockets, weight on her right leg, shoulders relaxed. She is in a bright converted loft studio: a whitewashed brick wall behind her, a tall window on the left softening the daylight, a wooden stool and a large potted monstera plant at the edge of the frame, pale wood floor. Soft directional daylight from the left, gentle shadow on the wall, muted warm-neutral palette. Shot on a 50mm lens at f/2.0, full figure with space above her head, natural skin texture, sharp focus on the face, photorealistic editorial photography.",
+      "negative_prompt": "artifacts, low quality, low resolution, blurry, indistinct, extra fingers, badly drawn hands, watermark, text",
+      "resolution": 1024,
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1536,
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 25,
+      "cfg": 3,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "4",
+        1
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "6",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "uncensored-t2i",
+      "images": [
+        "7",
+        0
+      ]
+    }
+  }
+}

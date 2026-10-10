@@ -12,9 +12,11 @@
       #workspace-root 的 data-* 读取首屏状态。
       本地开发者模式没有登录页，账号由本地 API 固定提供，所以这里先标成已登录；
       一旦接口返回未登录，App 会立刻回到未登录态并弹出登录框。
+      data-mode="local" 是「Comfy 生图」板块的开关：只有本地入口文件带这个标记，
+      线上 Go 的 SSR 模板不带，所以线上永远不会显示这个板块。
       生产构建产物里的这份 index.html 不会被使用（线上由 Go 的 SSR 模板渲染外壳）。
     -->
-    <div id="workspace-root" data-authenticated="1" data-user="local" data-brand="绘镜"></div>
+    <div id="workspace-root" data-authenticated="1" data-user="local" data-brand="绘镜" data-mode="local"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

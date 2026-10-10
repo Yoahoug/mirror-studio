@@ -9,6 +9,7 @@ import http from 'node:http';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 
+import * as comfyApi from './comfy.mjs';
 import * as consoleApi from './console.mjs';
 import {
   DATA_DIR,
@@ -301,6 +302,20 @@ route('POST', '/api/generate/reference-images', async (req, res) => {
   });
 });
 
+// ── Comfy 本地生图（仅本地模式：线上 Go 服务没有这三条接口，前端据此不显示板块）──
+
+route('GET', '/api/comfy/status', async (_req, res) => ok(res, await comfyApi.comfyStatus()));
+
+route('GET', '/api/comfy/log', async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const limit = Math.max(1, Math.min(20, Number.parseInt(url.searchParams.get('limit') || '8', 10) || 8));
+  return ok(res, await comfyApi.readComfyLog({limit}));
+});
+
+route('POST', '/api/comfy/start', async (_req, res) => ok(res, await comfyApi.startComfy()));
+
+route('POST', '/api/comfy/interrupt', async (_req, res) => ok(res, await comfyApi.interruptComfy()));
+
 route('GET', '/api/workspace/history', async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const page = Math.max(1, Number.parseInt(url.searchParams.get('page') || '1', 10));
@@ -555,7 +570,8 @@ export function isApiPath(pathname) {
 
 route('GET', '/healthz', async (_req, res) => ok(res, {status: 'ok'}));
 
-const infoHTML = `<!doctype html>
+function infoHTML({comfyLine}) {
+  return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -581,13 +597,19 @@ const infoHTML = `<!doctype html>
     <p>数据目录：<code>${DATA_DIR}</code>；图片：<code>${path.join(DATA_DIR, 'media')}</code>。</p>
     <p>生图渠道：${providerConfigured ? '<b>真实渠道</b>' : '本地占位图（未配置 PROVIDER_API_KEY）'}；
        对话渠道：${llmConfigured ? '<b>真实渠道</b>' : '本地模拟回复（未配置 LLM_API_KEY）'}。</p>
+    <p>ComfyUI（工作台「Comfy 生图」板块）：${comfyLine}。</p>
   </main>
 </body>
 </html>`;
+}
 
 route('GET', '/__local', async (_req, res) => {
+  const comfy = await comfyApi.comfyStatus();
+  const comfyLine = comfy.running
+    ? `<b>运行中</b>（<code>${comfy.base_url}</code>${comfy.stats?.comfyui_version ? ` · ComfyUI ${comfy.stats.comfyui_version}` : ''}）`
+    : `未运行（<code>${comfy.base_url}</code>）；可打开工作台的「Comfy 生图」板块点击启动`;
   res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'});
-  res.end(infoHTML);
+  res.end(infoHTML({comfyLine}));
 });
 
 // ── 调度 ──
@@ -611,7 +633,7 @@ export async function handleRequest(req, res) {
         res.end();
         return true;
       }
-      const known = error instanceof ValidationError || error instanceof uploadApi.UploadError || error instanceof novelApi.NovelError;
+      const known = error instanceof ValidationError || error instanceof uploadApi.UploadError || error instanceof novelApi.NovelError || error instanceof comfyApi.ComfyError;
       if (known) {
         fail(res, 400, error.message, 400);
       } else {
