@@ -312,6 +312,10 @@ func (adapter webAuthAdapter) SetPassword(ctx context.Context, userID int64, pas
 	return adapter.service.SetPassword(ctx, userID, password)
 }
 
+func (adapter webAuthAdapter) ValidateRegisterEmailCode(email, code string) error {
+	return adapter.service.ValidateRegisterEmailCode(email, code)
+}
+
 // runMaintenanceLoop performs the periodic housekeeping the reference ran from
 // management commands: expired sessions, expired upload sessions and media
 // retention. It never retries silently: every failure is logged with backoff.

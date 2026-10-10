@@ -215,15 +215,18 @@ func newHarness(t *testing.T) *harness {
 		Sessions: sessions,
 		ResolveUser: func(ctx context.Context, userID int64) (httpapi.Principal, error) {
 			var username, role, status string
-			var isStaff int
+			var isStaff, isActive int
 			err := handle.QueryRowContext(ctx,
-				`SELECT username, role, status, is_staff FROM users_user WHERE id = ?`, userID).
-				Scan(&username, &role, &status, &isStaff)
+				`SELECT username, role, status, is_staff, is_active FROM users_user WHERE id = ?`, userID).
+				Scan(&username, &role, &status, &isStaff, &isActive)
 			if err != nil {
 				return nil, err
 			}
 			return auth.Principal{User: &auth.User{
 				IDValue: userID, Username: username, Role: role, Status: status, IsStaff: isStaff == 1,
+				// The middleware resolves sessions exactly like the production
+				// resolver does, is_active included.
+				IsActiveFlag: isActive == 1,
 			}}, nil
 		},
 	}, mux)

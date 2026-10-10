@@ -32,6 +32,7 @@ type AuthService interface {
 	Authenticate(ctx context.Context, username, password string) (httpapi.Principal, error)
 	Register(ctx context.Context, username, email, password, ip string) (httpapi.Principal, error)
 	SetPassword(ctx context.Context, userID int64, password string) error
+	ValidateRegisterEmailCode(email, code string) error
 }
 
 // QuotaService reports the caller's quota counters.
@@ -227,6 +228,11 @@ func (s *Service) loginPage(w http.ResponseWriter, r *http.Request) error {
 	if r.Method == http.MethodPost {
 		return s.loginSubmit(w, r)
 	}
+	if httpapi.UserOf(r) != nil {
+		// Contract §1: an authenticated visitor never sees the credential form.
+		redirectFound(w, "/workspace")
+		return nil
+	}
 	values := s.baseValues(r)
 	values["form"] = loginFormSpec()
 	values["captcha_code"], values["captcha_svg"] = s.issueCaptchaPair(r)
@@ -241,6 +247,11 @@ func (s *Service) registerPage(w http.ResponseWriter, r *http.Request) error {
 	}
 	if r.Method == http.MethodPost {
 		return s.registerSubmit(w, r)
+	}
+	if httpapi.UserOf(r) != nil {
+		// Contract §1: an authenticated visitor never sees the sign-up form.
+		redirectFound(w, "/workspace")
+		return nil
 	}
 	values := s.baseValues(r)
 	values["form"] = s.registerFormSpec()
@@ -468,7 +479,11 @@ func (s *Service) loginSubmit(w http.ResponseWriter, r *http.Request) error {
 	if authenticated == nil {
 		s.recordLoginFailure(r.Context(), accountForm.value("username"), httpapi.From(r).ClientIP)
 	}
-	if authenticated != nil {
+	// Signing in requires a fully valid form: the reference only reaches
+	// form_valid() through is_valid(), so a missing or wrong captcha must not
+	// authenticate — the API path rejects such a form with 400 as well. A
+	// rejected submit still counts a failure, exactly like form_invalid.
+	if authenticated != nil && accountForm.valid() {
 		s.signIn(r, authenticated)
 		s.clearLoginFailures(r.Context(), accountForm.value("username"), httpapi.From(r).ClientIP)
 		// django.contrib.auth.login() rotates the CSRF token on every login; the
@@ -476,6 +491,9 @@ func (s *Service) loginSubmit(w http.ResponseWriter, r *http.Request) error {
 		httpapi.RotateCSRFToken(w, r)
 		redirectFound(w, s.loginSuccessURL(r))
 		return nil
+	}
+	if authenticated != nil {
+		s.recordLoginFailure(r.Context(), accountForm.value("username"), httpapi.From(r).ClientIP)
 	}
 	values := s.baseValues(r)
 	values["form"] = accountForm
@@ -492,11 +510,26 @@ func (s *Service) registerSubmit(w http.ResponseWriter, r *http.Request) error {
 	if !accountForm.hasError("password") && accountForm.value("password") != accountForm.value("confirm_password") {
 		accountForm.addNonFieldError("两次密码输入不一致")
 	}
+	// The API path verifies the ownership of the address before it registers;
+	// without the same check here the SSR form accepted any email address.
+	email := strings.ToLower(strings.TrimSpace(accountForm.value("email")))
+	if accountForm.valid() && email != "" && accountForm.value("email_verification_code") != "" {
+		if err := s.auth.ValidateRegisterEmailCode(email, accountForm.value("email_verification_code")); err != nil {
+			accountForm.addNonFieldError(err.Error())
+		}
+	}
+	// Strength violations are part of the frozen error set (§0.4); the SSR form
+	// used to accept passwords the API rejects.
+	if accountForm.valid() {
+		for _, violation := range auth.ValidatePassword(accountForm.value("password"), nil) {
+			accountForm.addNonFieldError(violation.Message)
+		}
+	}
 	if accountForm.valid() {
 		user, err := s.auth.Register(
 			r.Context(),
 			strings.TrimSpace(accountForm.value("username")),
-			strings.ToLower(strings.TrimSpace(accountForm.value("email"))),
+			email,
 			accountForm.value("password"),
 			httpapi.From(r).ClientIP,
 		)
@@ -525,6 +558,13 @@ func (s *Service) forgotPasswordSubmit(w http.ResponseWriter, r *http.Request) e
 	}
 	if !accountForm.hasError("new_password") && accountForm.value("new_password") != accountForm.value("confirm_password") {
 		accountForm.addNonFieldError("两次密码输入不一致")
+	}
+	// The API reset path enforces the password policy; the SSR form skipped it,
+	// so /forgot-password could set a password like "1".
+	if accountForm.valid() {
+		for _, violation := range auth.ValidatePassword(accountForm.value("new_password"), nil) {
+			accountForm.addNonFieldError(violation.Message)
+		}
 	}
 	if accountForm.valid() {
 		user, err := s.auth.ByUsername(r.Context(), strings.TrimSpace(accountForm.value("username")))
@@ -621,6 +661,12 @@ func (s *Service) loginSuccessURL(r *http.Request) string {
 }
 
 func allowedNext(target string) bool {
+	// A backslash is normalized to a slash by browsers, so "/\evil.com" is a
+	// protocol-relative URL in disguise; Django's url_has_allowed_host_and_scheme
+	// rejects it for the same reason.
+	if strings.ContainsAny(target, "\\") {
+		return false
+	}
 	if strings.HasPrefix(target, "//") || strings.Contains(target, "://") {
 		return false
 	}

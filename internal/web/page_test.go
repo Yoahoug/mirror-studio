@@ -168,7 +168,12 @@ func (u *fakeUser) Email() string        { return u.email }
 func (u *fakeUser) IsOperator() bool     { return u.operator }
 func (u *fakeUser) IsActiveStatus() bool { return u.active }
 
-type fakeAuth struct{ users []*fakeUser }
+type fakeAuth struct {
+	users []*fakeUser
+	// emailCodeCheck lets a test decide which verification codes the register
+	// submit accepts.
+	emailCodeCheck func(email, code string) error
+}
 
 func (a *fakeAuth) find(id int64) *fakeUser {
 	for _, user := range a.users {
@@ -212,6 +217,13 @@ func (a *fakeAuth) Register(_ context.Context, username, email, _ string, _ stri
 func (a *fakeAuth) SetPassword(_ context.Context, id int64, _ string) error {
 	if a.find(id) == nil {
 		return fmt.Errorf("user %d not found", id)
+	}
+	return nil
+}
+
+func (a *fakeAuth) ValidateRegisterEmailCode(email, code string) error {
+	if a.emailCodeCheck != nil {
+		return a.emailCodeCheck(email, code)
 	}
 	return nil
 }

@@ -203,7 +203,11 @@ func TestPythonJSONDumpsEscapesLikeTheReference(t *testing.T) {
 	if got != want {
 		t.Errorf("json = %q, want %q", got, want)
 	}
-	if escaped := pythonJSONDumps([][2]string{{"title", "绘镜 <b>&</b>"}}); escaped != `{"title": "绘镜 <b>&</b>"}` {
+	if escaped := pythonJSONDumps([][2]string{{"title", "绘镜 <b>&</b>"}}); escaped != `{"title": "绘镜 \u003cb\u003e\u0026\u003c/b\u003e"}` {
+		// json.dumps leaves <, > and & alone, but this value is embedded in a
+		// <script type="application/json"> element through |safe, so the encoder
+		// escapes them the way Django's json_script filter does: a note holding
+		// "</script>" must not be able to close that element.
 		t.Errorf("json = %q", escaped)
 	}
 }

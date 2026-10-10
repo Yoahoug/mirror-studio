@@ -2,11 +2,14 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+
+	"mirror-studio/internal/httpapi"
 )
 
 // fakeRisk records the risk calls the SSR login submit makes, mirroring what
@@ -43,11 +46,36 @@ func loginRiskHarness(t *testing.T) (*pageHarness, *fakeRisk) {
 }
 
 // postLoginForm submits the SSR login form the way a browser does: the CSRF
-// cookie the GET minted plus the csrfmiddlewaretoken the page embedded.
+// cookie the GET minted, the csrfmiddlewaretoken the page embedded, and — when
+// the caller did not supply one — the captcha code that same GET stored in the
+// session. Testing the credential path with an empty captcha would only prove
+// that the form rejects it.
 func postLoginForm(h *pageHarness, form url.Values) pageResponse {
 	page := h.get("/login")
 	form.Set("csrfmiddlewaretoken", csrfTokenOfPage(h.t, page.body))
+	if form.Get("captcha_code") == "" {
+		form.Set("captcha_code", sessionCaptchaCode(h))
+	}
 	return h.request(http.MethodPost, "/login", form)
+}
+
+// sessionCaptchaCode reads the code the last GET stored for this client.
+func sessionCaptchaCode(h *pageHarness) string {
+	if h.service.site == nil || h.service.site.DB == nil {
+		return ""
+	}
+	var data string
+	key := h.cookies[httpapi.SessionCookieName]
+	if err := h.service.site.DB.QueryRow(
+		`SELECT data FROM app_session WHERE session_key = ?`, key).Scan(&data); err != nil {
+		return ""
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return ""
+	}
+	code, _ := payload["captcha_code"].(string)
+	return code
 }
 
 func TestSSRLoginRecordsFailureAndClearsOnSuccess(t *testing.T) {

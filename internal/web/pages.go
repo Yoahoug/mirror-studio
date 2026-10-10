@@ -152,7 +152,12 @@ func renderCaptchaDataURI(code string) string {
 // ── python-flavoured JSON ──
 
 // pythonJSONDumps renders an ordered object the way json.dumps(..., ensure_ascii=False)
-// does: ", " and ": " separators, no HTML escaping, non-ASCII kept literal.
+// does: ", " and ": " separators, no escaping beyond what JSON itself needs,
+// non-ASCII kept literal. The value is embedded in a <script
+// type="application/json"> element via |safe, so the encoder additionally escapes
+// the three characters that can close that element (Django's json_script filter
+// escapes the same three); release notes come from editable configuration and the
+// changelog.
 func pythonJSONDumps(pairs [][2]string) string {
 	out := &strings.Builder{}
 	out.WriteString("{")
@@ -177,6 +182,8 @@ func pythonJSONString(value string) string {
 			out.WriteString(`\"`)
 		case '\\':
 			out.WriteString(`\\`)
+		case '<', '>', '&':
+			fmt.Fprintf(out, `\u%04x`, char)
 		case '\n':
 			out.WriteString(`\n`)
 		case '\r':
