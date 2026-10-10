@@ -15,17 +15,17 @@ export const translations = {
       stable: "2026 Stable"
     },
     header: {
-      creationCore: "生图工作台 (Image Studio)",
-      comfy: "Comfy 生图 (ComfyUI Studio)",
-      tts: "TTS 语音合成 (TTS Studio)",
-      novelviz: "小说场景可视化 (Novel Cinema)",
-      history: "历史记录 (History)",
+      creationCore: "生图工作台",
+      comfy: "ComfyUI 生图工作台",
+      tts: "TTS 语音合成工作台",
+      novelviz: "小说场景可视化",
+      history: "历史记录",
       brand: "绘镜",
       modelSwitch: "模型切换"
     },
     history: {
       title: "历史记录",
-      subtitle: "回顾您的创意映射旅程 (Mirror of past inspirations)",
+      subtitle: "回顾您的创意映射旅程",
       search: "搜索历史内容...",
       tokens: "令牌",
       deleteToast: "已从历史记录中移除",
@@ -58,7 +58,7 @@ export const translations = {
       ]
     },
     userPanel: {
-      creator: "镜界创造者 (Mirror Creator)",
+      creator: "镜界创造者",
       invite: "邀请有礼",
       quota: "当前配额",
       privacy: "隐私安全",
@@ -70,7 +70,7 @@ export const translations = {
     recharge: {
       energy: "能量补给",
       title: "为您的创意加成",
-      subtitle: "选择最适合您的方案，通过绘镜映射更多精彩 (Refuel your inspiration mirror)",
+      subtitle: "选择最适合您的方案，通过绘镜映射更多精彩",
       recommended: "最受推荐",
       priceMonth: "/月",
       originalPrice: "原价",
@@ -117,7 +117,7 @@ export const translations = {
     },
     settings: {
       title: "系统设置",
-      subtitle: "ArtMirror Config",
+      subtitle: "系统偏好设置",
       tabs: {
         account: "账户设置",
         pref: "应用偏好",
@@ -134,7 +134,7 @@ export const translations = {
         privacy: "隐私协议",
         data: "数据管理"
       },
-      save: "保持更改 (Save Changes)"
+      save: "保存更改"
     },
     toasts: {
       newChat: "已回到生图工作台",

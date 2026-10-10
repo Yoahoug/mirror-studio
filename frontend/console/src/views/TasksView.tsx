@@ -159,7 +159,7 @@ export function TasksView() {
                       </div>
                     </td>
                     <td className="px-4 py-3.5 text-[var(--color-submuted)] tabular-nums">
-                      {task.created_at ? new Date(task.created_at).toLocaleString() : '--'}
+                      {task.created_at ? new Date(task.created_at).toLocaleString("zh-CN") : '--'}
                     </td>
                     <td className="px-4 py-3.5 tabular-nums">
                       {t.console.tasks.costPoints.replace(

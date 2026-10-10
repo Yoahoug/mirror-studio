@@ -204,7 +204,7 @@ export function UsersView() {
                       {user.quota?.available_quota ?? '--'}
                     </td>
                     <td className="px-4 py-3.5 text-[var(--color-submuted)] tabular-nums">
-                      {user.date_joined ? new Date(user.date_joined).toLocaleDateString() : '--'}
+                      {user.date_joined ? new Date(user.date_joined).toLocaleDateString("zh-CN") : '--'}
                     </td>
                     <td className="px-5 py-3.5 text-right">
                       <Button

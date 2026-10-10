@@ -200,7 +200,7 @@ export function SettingsView() {
                   </td>
                   <td className="px-4 py-3 text-[var(--color-muted)]">{item.category}</td>
                   <td className="px-5 py-3 text-[var(--color-submuted)] tabular-nums">
-                    {item.updated_at ? new Date(item.updated_at).toLocaleString() : '--'}
+                    {item.updated_at ? new Date(item.updated_at).toLocaleString("zh-CN") : '--'}
                   </td>
                 </tr>
               ))}

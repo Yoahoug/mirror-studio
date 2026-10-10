@@ -835,7 +835,7 @@ export default function TtsWorkbench({
         <aside className="order-2 flex flex-col border-t border-black/5 bg-white/85 p-4 lg:order-1 lg:h-full lg:min-h-0 lg:border-r lg:border-t-0">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <div className="text-[11px] font-black uppercase tracking-[0.3em] text-gray-400">TTS Studio</div>
+              <div className="text-[11px] font-black uppercase tracking-[0.3em] text-gray-400">TTS STUDIO</div>
               <h1 className="mt-1.5 text-[1.55rem] font-black tracking-tight text-gray-950 sm:text-[1.9rem]">
                 {MODE_TABS.find((tab) => tab.value === mode)?.label || "TTS 语音合成"}
               </h1>

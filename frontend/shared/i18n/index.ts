@@ -289,7 +289,7 @@ export const dictionary = {
         code: "渠道编码",
         type: "类型",
         provider: "服务方",
-        baseUrl: "Base URL",
+        baseUrl: "接口地址 (Base URL)",
         apiPath: "API 路径",
         editApiPath: "图生图 API 路径",
         editApiPathPlaceholder: "留空则自动从 API 路径推导",

@@ -111,7 +111,7 @@ export function OverviewView({ onNavigate }: { onNavigate: (tab: ConsoleTab) => 
                 </div>
               </div>
               <div className="mt-3 text-2xl font-black tracking-tight text-[var(--color-ink)] tabular-nums sm:text-3xl">
-                {card.value.toLocaleString()}
+                {card.value.toLocaleString("zh-CN")}
               </div>
               <p className="mt-1 text-xs text-[var(--color-submuted)]">{card.sub}</p>
             </Card>
@@ -172,7 +172,7 @@ export function OverviewView({ onNavigate }: { onNavigate: (tab: ConsoleTab) => 
                       </p>
                     </div>
                     <span className="flex-shrink-0 text-[11px] text-[var(--color-submuted)] tabular-nums">
-                      {task.created_at ? new Date(task.created_at).toLocaleTimeString() : ''}
+                      {task.created_at ? new Date(task.created_at).toLocaleTimeString("zh-CN") : ''}
                     </span>
                   </div>
                   {task.error_message && (
@@ -227,7 +227,7 @@ export function OverviewView({ onNavigate }: { onNavigate: (tab: ConsoleTab) => 
                       {log.error_message || log.remark || t.console.overview.noErrorDetail}
                     </p>
                     <p className="mt-1 text-[10px] text-[var(--color-muted)] tabular-nums">
-                      {log.created_at ? new Date(log.created_at).toLocaleString() : ''} · {log.source}
+                      {log.created_at ? new Date(log.created_at).toLocaleString("zh-CN") : ''} · {log.source}
                     </p>
                   </div>
                 ))}
