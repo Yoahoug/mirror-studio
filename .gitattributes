@@ -2,3 +2,6 @@
 # Windows 上 core.autocrlf=true 会把它转成 CRLF，导致 golden 测试全部失败。
 # 用 text eol=lf 而不是 -text，工作区若已是 CRLF 也只会被归一化，不会出现假修改。
 internal/web/testdata/** text eol=lf
+# VERSION 会被 Dockerfile 用 $(cat VERSION) 拼进 -ldflags：CRLF 检出会让版本号
+# 带上 \r 进二进制（Windows 上 docker build 即如此）。固定 LF 检出消除这一差异。
+VERSION text eol=lf

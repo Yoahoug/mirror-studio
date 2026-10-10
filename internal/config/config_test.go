@@ -26,7 +26,7 @@ func setEnv(t *testing.T, env map[string]string) {
 		"SECRET_KEY", "FIELD_CRYPT_KEY", "PUBLIC_ORIGIN", "SITE_DOMAIN", "DATABASE_URL",
 		"DEBUG", "MOCK_PROVIDER_ENABLED", "ALLOW_INSECURE_PROD", "CONSOLE_HMAC_ENABLED",
 		"GENERATION_TASKS_RUN_INLINE", "NOVELVIZ_RUN_INLINE", "MINIO_ENDPOINT",
-		"TIME_ZONE", "APP_RELEASE_FALLBACK_VERSION",
+		"TIME_ZONE", "APP_RELEASE_FALLBACK_VERSION", "APP_LISTEN", "APP_PORT",
 	} {
 		t.Setenv(key, "")
 	}
@@ -41,7 +41,7 @@ func setEnv(t *testing.T, env map[string]string) {
 
 func TestLoadMockProviderDefaultsOff(t *testing.T) {
 	setEnv(t, prodEnv(nil))
-	cfg, err := Load()
+	cfg, err := Load("0.0.1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestLoadMockProviderDefaultsOff(t *testing.T) {
 
 func TestLoadRejectsMockProviderInProduction(t *testing.T) {
 	setEnv(t, prodEnv(map[string]string{"MOCK_PROVIDER_ENABLED": "1"}))
-	if _, err := Load(); err == nil {
+	if _, err := Load("0.0.1"); err == nil {
 		t.Fatal("production boot with MOCK_PROVIDER_ENABLED=1 must fail")
 	} else if !strings.Contains(err.Error(), "MOCK_PROVIDER_ENABLED") {
 		t.Fatalf("error should name the switch, got %v", err)
@@ -61,7 +61,7 @@ func TestLoadRejectsMockProviderInProduction(t *testing.T) {
 
 func TestLoadAllowsMockProviderInDebug(t *testing.T) {
 	setEnv(t, prodEnv(map[string]string{"MOCK_PROVIDER_ENABLED": "1", "DEBUG": "1"}))
-	cfg, err := Load()
+	cfg, err := Load("0.0.1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestLoadAllowsMockProviderInDebug(t *testing.T) {
 
 func TestLoadSecureSSLRedirectDefaults(t *testing.T) {
 	setEnv(t, prodEnv(nil))
-	cfg, err := Load()
+	cfg, err := Load("0.0.1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestLoadSecureSSLRedirectDefaults(t *testing.T) {
 		t.Fatal("SECURE_SSL_REDIRECT must default to true outside DEBUG")
 	}
 	setEnv(t, prodEnv(map[string]string{"DEBUG": "1"}))
-	cfg, err = Load()
+	cfg, err = Load("0.0.1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestLoadRejectsRemovedSwitches(t *testing.T) {
 		"GENERATION_TASKS_RUN_INLINE", "NOVELVIZ_RUN_INLINE",
 	} {
 		setEnv(t, prodEnv(map[string]string{name: "1"}))
-		if _, err := Load(); err == nil {
+		if _, err := Load("0.0.1"); err == nil {
 			t.Fatalf("%s=1 must refuse to boot", name)
 		} else if !strings.Contains(err.Error(), name) {
 			t.Fatalf("error should name %s, got %v", name, err)
@@ -105,9 +105,34 @@ func TestLoadRejectsRemovedSwitches(t *testing.T) {
 
 func TestLoadRejectsMinioStorage(t *testing.T) {
 	setEnv(t, prodEnv(map[string]string{"MINIO_ENDPOINT": "http://127.0.0.1:9000"}))
-	if _, err := Load(); err == nil {
+	if _, err := Load("0.0.1"); err == nil {
 		t.Fatal("MINIO_* storage must refuse to boot")
 	} else if !strings.Contains(err.Error(), "MINIO") {
 		t.Fatalf("error should name MINIO, got %v", err)
+	}
+}
+
+func TestLoadListenAddress(t *testing.T) {
+	setEnv(t, prodEnv(nil))
+	cfg, err := Load("0.0.1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ListenAddr != "0.0.0.0:8000" {
+		t.Fatalf("default listen address, got %q", cfg.ListenAddr)
+	}
+
+	setEnv(t, prodEnv(map[string]string{"APP_PORT": "9001"}))
+	if cfg, err = Load("0.0.1"); err != nil {
+		t.Fatalf("Load: %v", err)
+	} else if cfg.ListenAddr != "0.0.0.0:9001" {
+		t.Fatalf("APP_PORT must move the listener, got %q", cfg.ListenAddr)
+	}
+
+	setEnv(t, prodEnv(map[string]string{"APP_PORT": "9001", "APP_LISTEN": "127.0.0.1:7000"}))
+	if cfg, err = Load("0.0.1"); err != nil {
+		t.Fatalf("Load: %v", err)
+	} else if cfg.ListenAddr != "127.0.0.1:7000" {
+		t.Fatalf("APP_LISTEN must win over APP_PORT, got %q", cfg.ListenAddr)
 	}
 }

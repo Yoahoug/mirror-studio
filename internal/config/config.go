@@ -209,7 +209,11 @@ func envList(name string, def []string) []string {
 // Load resolves the configuration from the environment and validates it.
 // Any error returned here must abort startup: the caller prints it and exits
 // non-zero rather than serving a partially configured service.
-func Load() (*Config, error) {
+//
+// buildVersion is the -ldflags injected version. It only feeds the release-notes
+// fallback used when CHANGELOG.md is missing or unparsable — without it the
+// fallback would have to hardcode a version that goes stale on every release.
+func Load(buildVersion string) (*Config, error) {
 	// Switches the rewrite deleted outright must fail loudly when a deployment
 	// still sets them: silently ignoring ALLOW_INSECURE_PROD would reopen the
 	// hole the guard exists for, and a stale CONSOLE_HMAC_ENABLED would look
@@ -264,6 +268,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	appPort = clampRange(appPort, 1, 65535)
+	// APP_LISTEN 是完整地址，优先级最高；没配时由 APP_PORT 拼默认地址。
+	// 默认值必须放在这里：main.go 曾硬编码 0.0.0.0:8000，导致 APP_PORT
+	// 只影响 debug 兜底 origin，监听端口却纹丝不动。
+	if strings.TrimSpace(cfg.ListenAddr) == "" {
+		cfg.ListenAddr = fmt.Sprintf("0.0.0.0:%d", appPort)
+	}
 
 	origin := strings.TrimSpace(envRaw("PUBLIC_ORIGIN"))
 	if origin == "" {
@@ -493,7 +503,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	cfg.Release = ParseChangelog("CHANGELOG.md", envStr("APP_RELEASE_FALLBACK_VERSION", "0.0.1"))
+	fallbackVersion := strings.TrimPrefix(strings.TrimSpace(buildVersion), "v")
+	if fallbackVersion == "" {
+		fallbackVersion = "dev"
+	}
+	cfg.Release = ParseChangelog("CHANGELOG.md", envStr("APP_RELEASE_FALLBACK_VERSION", fallbackVersion))
 	return cfg, nil
 }
 

@@ -29,7 +29,13 @@ VERSION_FILE = ROOT / "VERSION"
 CHANGELOG_FILE = ROOT / "CHANGELOG.md"
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
-SECTION_RE = re.compile(r"^## \[(?P<version>[^\]]+)\](?:\s*-\s*(?P<date>\S+))?\s*$", re.MULTILINE)
+# 日期只认 YYYY-MM-DD（与 Go 端 config/changelog.go 的解析同一形状）：用 \S+ 时
+# 标题里没有日期的情况下，`\s*` 会跨过空行把正文的第一条 `- xxx` 当成日期，
+# 于是「已有版本段只补日期」的分支永远进不去。
+SECTION_RE = re.compile(
+    r"^## \[(?P<version>[^\]]+)\](?:[^\S\n]*-[^\S\n]*(?P<date>\d{4}-\d{2}-\d{2}))?[^\S\n]*$",
+    re.MULTILINE,
+)
 UNRELEASED_RE = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 
 
@@ -89,15 +95,20 @@ def section_body(changelog: str, version: str) -> str:
 
 
 def stamp_changelog(changelog: str, version: str, today: str) -> tuple[str, bool]:
-    """把 [Unreleased] 段改写成目标版本段；若已存在版本段则只补日期。"""
+    """把 [Unreleased] 段改写成目标版本段；若已存在目标版本段则只补日期。
+
+    目标版本段已存在时**不再**改写 [Unreleased]：否则同一版本会出现两个
+    `## [x.y.z]` 段，服务端解析与 tag 消息都取第一个，人工维护的那段被静默忽略。
+    """
+    for candidate in SECTION_RE.finditer(changelog):
+        if candidate.group("version") != version:
+            continue
+        if candidate.group("date"):
+            return changelog, False
+        return changelog.replace(candidate.group(0), f"## [{version}] - {today}", 1), True
     if UNRELEASED_RE.search(changelog):
         stamped = UNRELEASED_RE.sub(f"## [{version}] - {today}\n", changelog, count=1)
         return stamped, True
-    for candidate in SECTION_RE.finditer(changelog):
-        if candidate.group("version") == version and not candidate.group("date"):
-            line = candidate.group(0)
-            stamped = changelog.replace(line, f"## [{version}] - {today}", 1)
-            return stamped, True
     return changelog, False
 
 
@@ -137,8 +148,11 @@ def main() -> int:
         print("\n--dry-run：未写入任何文件")
         return 0
 
-    CHANGELOG_FILE.write_text(updated, encoding="utf-8")
-    VERSION_FILE.write_text(f"{target}\n", encoding="utf-8")
+    # 显式 newline="\n"：Windows 上默认会把整份文件改写成 CRLF。CHANGELOG 是
+    # 服务端解析的数据源，VERSION 还会被 Dockerfile 用 $(cat VERSION) 拼进
+    # -ldflags —— 多出来的 \r 会跟着版本号进二进制。
+    CHANGELOG_FILE.write_text(updated, encoding="utf-8", newline="\n")
+    VERSION_FILE.write_text(f"{target}\n", encoding="utf-8", newline="\n")
 
     run(["git", "add", "VERSION", "CHANGELOG.md"])
     run(["git", "commit", "-m", f"chore(release): {target}"])

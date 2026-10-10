@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 构建期校验（§3.6-4）：build 结束后运行。
-// 1. 检查 4 个契约产物文件名存在（Go 模板按固定路径引用，缺失即坏包——直接 fail，不许静默）。
+// 1. 检查 5 个契约产物文件名存在（Go 模板按固定路径引用，缺失即坏包——直接 fail，不许静默）。
 // 2. 输出各应用 js/css 的 gzip 前后体积表，作为体积预算的可见基准。
 
 import fs from 'node:fs';
@@ -15,6 +15,8 @@ const CONTRACT_FILES = [
   'static/workspace/assets/workspace.css',
   'static/console/assets/console.js',
   'static/console/assets/console.css',
+  // SSR 外壳（base.html）按这个固定路径引样式：登录/注册/管理台首屏都靠它。
+  'static/css/main.css',
 ];
 
 function byteSize(file) {
@@ -37,7 +39,7 @@ if (missing.length) {
   process.exit(1);
 }
 
-console.log('\n✓ 4 个契约产物齐全：');
+console.log('\n✓ 5 个契约产物齐全：');
 let table = '  产物                                    原始        gzip\n';
 for (const file of CONTRACT_FILES) {
   const full = path.join(ROOT, file);

@@ -12,9 +12,16 @@ COPY frontend/shared/ ./frontend/shared/
 COPY frontend/workspace/ ./frontend/workspace/
 COPY frontend/console/ ./frontend/console/
 COPY frontend/tsconfig.json ./frontend/
+# SSR 模板必须进构建段：tailwind.config.js 的 content 会扫描
+# internal/web/templates/**/*.html，缺了它们 main.css 会少掉登录/注册/错误页
+# 专用的工具类（实测 23 个选择器），SSR 页面在镜像里就是坏样式。
+COPY internal/web/templates/ ./internal/web/templates/
 COPY scripts/check-build-contract.mjs ./scripts/
 COPY static_src/ ./static_src/
 COPY tailwind.config.js postcss.config.js ./
+# 版本号的唯一来源是仓库根 VERSION（frontend/shared/app-version.mjs 按相对路径读它）；
+# 不 COPY 的话页脚与产物里的版本会静默变成兜底值 0.0.0。
+COPY VERSION ./
 RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
 RUN npm run build
 

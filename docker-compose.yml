@@ -11,9 +11,10 @@ services:
       # 构建段要拉 npm 依赖与 Go 模块。默认 buildkit 桥接网络在受限环境下
       # 没有外网路由，host 网络最稳；如你的环境桥接可直连，删掉这行即可。
       network: host
-    # 默认使用 GitHub Actions 构建并发布到 GHCR 的镜像；
-    # 想就地构建（docker compose up -d --build）时 build 段仍然生效。
-    image: ghcr.io/yoahoug/mirror-studio:${IMAGE_TAG:-0.0.1}
+    # 默认使用 GitHub Actions 构建并发布到 GHCR 的镜像；默认标签 :latest
+    # （workflow 在默认分支与版本标签上都会刷新它）。要按版本固定（回滚时推荐）
+    # 用 IMAGE_TAG=0.0.1；想就地构建用 docker compose up -d --build。
+    image: ghcr.io/yoahoug/mirror-studio:${IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file:
       - ${APP_ENV_FILE:-.env}

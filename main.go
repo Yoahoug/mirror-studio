@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the tz database is embedded so a scratch image still resolves TIME_ZONE
@@ -54,15 +53,12 @@ func run() error {
 	listen := flag.String("listen", "", "listen address (overrides APP_LISTEN)")
 	flag.Parse()
 
-	cfg, err := config.Load()
+	cfg, err := config.Load(version)
 	if err != nil {
 		return err
 	}
 	if *listen != "" {
 		cfg.ListenAddr = *listen
-	}
-	if strings.TrimSpace(cfg.ListenAddr) == "" {
-		cfg.ListenAddr = fmt.Sprintf("0.0.0.0:%d", 8000)
 	}
 
 	logger := newLogger(cfg)
