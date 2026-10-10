@@ -212,6 +212,16 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if user != nil {
+				// Django's ModelBackend.get_user returns None for an account that
+				// may not authenticate (is_active = 0), so a deactivated account
+				// resolves to anonymous on every request and its existing session
+				// stops working — not just new logins.
+				if account, ok := user.(interface{ IsActiveFlag() bool }); ok && !account.IsActiveFlag() {
+					state.Session.Flush()
+					user = nil
+				}
+			}
+			if user != nil {
 				state.User = user
 			}
 		}

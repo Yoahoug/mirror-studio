@@ -108,6 +108,11 @@ func (p Principal) Email() string        { return p.User.Email }
 func (p Principal) IsOperator() bool     { return p.User.IsOperator() }
 func (p Principal) IsActiveStatus() bool { return p.User.IsActiveStatus() }
 
+// IsActiveFlag reports Django's is_active flag. The middleware checks it on
+// every request because ModelBackend.get_user does: an account that may no
+// longer authenticate must not keep working through an existing session.
+func (p Principal) IsActiveFlag() bool { return p.User.IsActiveFlag }
+
 // SessionAuthHash carries the password-hash fingerprint the middleware compares
 // on every request, the role _auth_user_hash plays in Django: changing the
 // password invalidates every session minted under the old one.
