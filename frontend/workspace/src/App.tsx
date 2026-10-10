@@ -10,7 +10,8 @@ import SettingsModal, { type SettingsTabId } from "./components/SettingsModal";
 import AuthModal from "./components/AuthModal";
 import { fetchAccountSummary, fetchChatModels, type AccountSummaryResponse, type ChatModel, type UserInfo } from "./services/apiService";
 import { ToastContainer, ToastType } from "./components/Toast";
-import { Language, translations } from "./i18n";
+import { translations } from "./i18n";
+import { useLanguage } from "@shared/i18n";
 import { appConfig } from "@shared/config/app-mode";
 import { setOnAuthRequired } from "@shared/services/client";
 import { Skeleton } from "@shared/ui";
@@ -54,7 +55,6 @@ export default function App() {
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [selectedModel, setSelectedModel] = useState("");
   const [chatModels, setChatModels] = useState<ChatModel[]>([]);
-  const [language, setLanguage] = useState<Language>("zh");
   const [toasts, setToasts] = useState<{ id: string, message: string, type: ToastType }[]>([]);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [selectedTaskNo, setSelectedTaskNo] = useState("");
@@ -78,6 +78,9 @@ export default function App() {
   const comfyEnabled = appConfig.features.comfy;
   const ttsEnabled = appConfig.features.tts;
 
+  // 壳层语言跟随共享语言上下文（复核 P1-3）：与侧栏/顶栏同一开关同一持久化，
+  // 词条暂仍取本地字典（工作台组件透传 t.history / t.settings，台账「明确不做」）。
+  const { language } = useLanguage();
   const t = translations[language];
 
   const [isAuthenticated, setIsAuthenticated] = useState(initialIsAuthenticated);
@@ -85,25 +88,39 @@ export default function App() {
   const [accountSummary, setAccountSummary] = useState<AccountSummaryResponse | null>(null);
   const [selectedTtsTaskNo, setSelectedTtsTaskNo] = useState("");
 
-  const setActiveTab = (tab: string) => {
+  /**
+   * URL 写入语义（回归复核 P1-1/P1-2 修复）：
+   * - 用户交互（push=true）：pushState，产生可前进/后退的历史条目；
+   * - 状态恢复（popstate / 首屏 URL 恢复，push=false）：replaceState 静默对齐，
+   *   不制造重复历史条目，也不在恢复路径里再次入栈（后退陷阱）。
+   */
+  const applyTabUrl = (nextTab: string, taskNo: string | null, taskKind: string | null, push: boolean) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", nextTab);
+    if (taskNo && taskKind) {
+      url.searchParams.set("task", taskNo);
+      url.searchParams.set("task_kind", taskKind);
+    } else {
+      url.searchParams.delete("task");
+      url.searchParams.delete("task_kind");
+    }
+    if (push) {
+      window.history.pushState({}, "", url.toString());
+    } else {
+      window.history.replaceState({}, "", url.toString());
+    }
+  };
+
+  const setActiveTab = (tab: string, options: { push?: boolean } = {}) => {
     if (tab === "comfy" && !comfyEnabled) return;
     if (tab === "tts" && !ttsEnabled) return;
     const nextTab = WORKSPACE_TABS.has(tab) ? tab : "create";
     setActiveTabState(nextTab);
-    // URL 是状态来源（台账 #7）：板块切换写进 query，刷新/前进后退/分享链接都能恢复
-    const url = new URL(window.location.href);
-    url.searchParams.set("tab", nextTab);
-    if (nextTab !== "history") {
-      url.searchParams.delete("task");
-      url.searchParams.delete("task_kind");
-    }
-    window.history.pushState({}, "", url.toString());
-    document.title = `绘镜 · ${
-      nextTab === "history" ? t.header.history : nextTab === "novelviz" ? t.header.novelviz : t.header.creationCore
-    }`;
+    const push = options.push !== false;
+    applyTabUrl(nextTab, null, null, push);
   };
 
-  // 浏览器前进/后退：从 URL 恢复板块（含旧 tab=comfy/tts/novelviz 的兼容映射）
+  // 浏览器前进/后退：只从 URL 恢复状态（replaceState 语义，绝不再入栈）
   useEffect(() => {
     const handlePopState = () => {
       const params = new URLSearchParams(window.location.search);
@@ -113,28 +130,33 @@ export default function App() {
       const task = params.get("task") || "";
       const kind = params.get("task_kind") || "";
       if (task) {
-        openHistoryTask(kind === "comfy" ? `comfy:${task}` : kind === "tts" ? `tts:${task}` : task);
+        restoreHistoryTask(task, kind);
       } else {
         setSelectedTaskNo("");
         setSelectedComfyTaskNo("");
         setSelectedTtsTaskNo("");
       }
+      syncDocumentTitle(legacyTab);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 首屏从 URL 恢复（刷新 / 分享链接场景）
+  // 首屏从 URL 恢复（刷新 / 分享链接场景）：只 setState + replaceState 对齐
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const raw = params.get("tab") || "create";
-    if (raw !== "create") setActiveTab(WORKSPACE_TABS.has(raw) ? raw : "create");
-    const task = params.get("task");
+    const initialTab = WORKSPACE_TABS.has(raw) ? raw : "create";
+    const task = params.get("task") || "";
+    const kind = params.get("task_kind") || "";
     if (task) {
-      const kind = params.get("task_kind") || "";
-      openHistoryTask(kind === "comfy" ? `comfy:${task}` : kind === "tts" ? `tts:${task}` : task);
+      restoreHistoryTask(task, kind);
+    } else if (initialTab !== "create") {
+      setActiveTabState(initialTab);
     }
+    applyTabUrl(initialTab, task || null, task ? kind || "image" : null, false);
+    syncDocumentTitle(task || initialTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -142,6 +164,32 @@ export default function App() {
     setSelectedNovelTaskId(null);
     setActiveTab("novelviz");
     setNovelvizResetSignal((value) => value + 1);
+  };
+
+  const syncDocumentTitle = (tabOrTask: string) => {
+    const isTask = Boolean(tabOrTask) && !WORKSPACE_TABS.has(tabOrTask) && !tabOrTask.includes(":");
+    document.title = `绘镜 · ${
+      isTask ? t.header.history : tabOrTask === "history" ? t.header.history : tabOrTask === "novelviz" ? t.header.novelviz : tabOrTask === "tts" ? t.header.tts : tabOrTask === "comfy" ? t.header.comfy : t.header.creationCore
+    }`;
+  };
+
+  /** 从 URL 的结构化参数恢复任务选中态：只写 state，不动 history（恢复路径专用） */
+  const restoreHistoryTask = (taskNo: string, kind: string) => {
+    if (kind === "comfy" && comfyEnabled) {
+      setSelectedComfyTaskNo(taskNo);
+      setSelectedTaskNo("");
+      setSelectedTtsTaskNo("");
+      return;
+    }
+    if (kind === "tts" && ttsEnabled) {
+      setSelectedTtsTaskNo(taskNo);
+      setSelectedTaskNo("");
+      setSelectedComfyTaskNo("");
+      return;
+    }
+    setSelectedComfyTaskNo("");
+    setSelectedTtsTaskNo("");
+    setSelectedTaskNo(taskNo);
   };
 
   const openHistoryTask = (taskNo: string) => {
@@ -159,7 +207,7 @@ export default function App() {
         setSelectedComfyTaskNo(comfyTaskNo);
         setSelectedTaskNo("");
         setActiveTab("comfy");
-        syncTaskUrl(comfyTaskNo, "comfy");
+        applyTabUrl("comfy", comfyTaskNo, "comfy", true);
         return;
       }
     }
@@ -169,23 +217,15 @@ export default function App() {
         setSelectedTtsTaskNo(ttsTaskNo);
         setSelectedTaskNo("");
         setActiveTab("tts");
-        syncTaskUrl(ttsTaskNo, "tts");
+        applyTabUrl("tts", ttsTaskNo, "tts", true);
         return;
       }
     }
     setSelectedComfyTaskNo("");
     setSelectedTtsTaskNo("");
     setSelectedTaskNo(taskNo);
-    setActiveTab("create");
-    syncTaskUrl(taskNo, "image");
-  };
-
-  /** 任务回跳结构化入 URL：?task=<no>&task_kind=<kind>（台账 #3.5-4） */
-  const syncTaskUrl = (taskNo: string, kind: "image" | "comfy" | "tts") => {
-    const url = new URL(window.location.href);
-    url.searchParams.set("task", taskNo);
-    url.searchParams.set("task_kind", kind);
-    window.history.pushState({}, "", url.toString());
+    setActiveTab("create", { push: false });
+    applyTabUrl("create", taskNo, "image", true);
   };
 
   const applyAccountSummary = (summary: AccountSummaryResponse) => {
@@ -341,12 +381,12 @@ export default function App() {
       />
 
       <main className="relative z-0 flex flex-1 flex-col pb-24 md:pb-0">
-        <header className="z-40 flex flex-col gap-3 border-b border-gray-100 bg-white/85 px-4 py-3 backdrop-blur-md transition-all sm:px-6 md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
+        <header className="z-40 flex flex-col gap-3 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)]/85 px-4 py-3 backdrop-blur-md transition-all sm:px-6 md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
           <div className="flex min-w-0 items-center gap-2">
-            <h2 className="text-sm font-medium text-gray-500 uppercase tracking-widest italic leading-none">
+            <h2 className="text-sm font-medium text-[var(--color-muted)] uppercase tracking-widest italic leading-none">
               {activeTab === 'create' ? t.header.creationCore : activeTab === 'comfy' ? t.header.comfy : activeTab === 'tts' ? t.header.tts : activeTab === 'history' ? t.header.history : activeTab === 'novelviz' ? t.header.novelviz : t.header.brand}
             </h2>
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <div className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] animate-pulse" />
           </div>
           
           <TopToolbar 
