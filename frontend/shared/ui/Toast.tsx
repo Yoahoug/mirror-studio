@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
+import { useLanguage } from '../i18n';
 
 export type ToastType = 'success' | 'error' | 'info';
 
@@ -19,6 +20,7 @@ const ToastContext = createContext<ToastContextType | null>(null);
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const { t } = useLanguage();
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -43,14 +45,14 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         <AnimatePresence>
           {toasts.map((toast) => {
             const icons = {
-              success: <CheckCircle2 className="h-4 w-4 text-emerald-500 flex-shrink-0" />,
-              error: <AlertCircle className="h-4 w-4 text-rose-500 flex-shrink-0" />,
-              info: <Info className="h-4 w-4 text-blue-500 flex-shrink-0" />,
+              success: <CheckCircle2 className="h-4 w-4 text-[var(--color-success)] flex-shrink-0" />,
+              error: <AlertCircle className="h-4 w-4 text-[var(--color-danger)] flex-shrink-0" />,
+              info: <Info className="h-4 w-4 text-[var(--color-info)] flex-shrink-0" />,
             };
 
             const borderClasses = {
-              success: 'border-emerald-500/20 bg-[var(--color-surface)]',
-              error: 'border-rose-500/20 bg-[var(--color-surface)]',
+              success: 'border-[var(--color-success)]/25 bg-[var(--color-surface)]',
+              error: 'border-[var(--color-danger)]/25 bg-[var(--color-surface)]',
               info: 'border-[var(--color-border)] bg-[var(--color-surface)]',
             };
 
@@ -72,7 +74,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 </div>
                 <button
                   type="button"
-                  aria-label="关闭提示"
+                  aria-label={t.common.close}
                   onClick={() => removeToast(toast.id)}
                   className="rounded-lg p-1 text-[var(--color-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-ink)] transition-colors flex-shrink-0"
                 >

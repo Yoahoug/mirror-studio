@@ -1,5 +1,8 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { MotionConfig } from 'motion/react';
+import { ToastProvider } from '@shared/ui';
+import { LanguageProvider } from '@shared/i18n';
 import App from './App.tsx';
 import './index.css';
 
@@ -9,7 +12,14 @@ const rootEl = document.getElementById('workspace-root') || document.getElementB
 if (rootEl) {
   createRoot(rootEl).render(
     <StrictMode>
-      <App />
+      <MotionConfig reducedMotion="user">
+        <LanguageProvider>
+          <ToastProvider>
+            <App />
+          </ToastProvider>
+        </LanguageProvider>
+      </MotionConfig>
     </StrictMode>,
   );
 }
+

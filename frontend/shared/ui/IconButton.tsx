@@ -30,11 +30,11 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
 
     const variantClasses = {
       primary:
-        'bg-[#1a1a1a] text-white hover:bg-black active:scale-95 shadow-sm dark:bg-white dark:text-[#1a1a1a]',
+        'bg-[var(--color-ink)] text-[var(--color-surface)] hover:opacity-90 active:scale-95 shadow-sm',
       secondary:
         'border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-ink)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-surface-hover)] active:scale-95',
       accent:
-        'bg-[#6d5dfc] text-white hover:bg-[#5b4ce0] active:scale-95 shadow-sm shadow-[#6d5dfc]/20',
+        'bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] active:scale-95 shadow-sm shadow-[var(--color-accent)]/20',
       ghost:
         'text-[var(--color-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-ink)] active:scale-95',
       danger:
@@ -47,7 +47,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
         aria-label={ariaLabel}
         title={ariaLabel}
         disabled={disabled || loading}
-        className={`inline-flex items-center justify-center transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6d5dfc] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 select-none ${sizeClasses} ${variantClasses} ${className}`}
+        className={`inline-flex items-center justify-center transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 select-none ${sizeClasses} ${variantClasses} ${className}`}
         {...props}
       >
         {loading ? <Loader2 className="h-4 w-4 animate-spin text-current" /> : children}

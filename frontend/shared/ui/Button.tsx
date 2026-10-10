@@ -30,11 +30,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 
     const variantClasses = {
       primary:
-        'bg-[#1a1a1a] text-white hover:bg-black active:scale-[0.98] shadow-sm shadow-black/10 dark:bg-white dark:text-[#1a1a1a] dark:hover:bg-neutral-100',
+        'bg-[var(--color-ink)] text-[var(--color-surface)] hover:opacity-90 active:scale-[0.98] shadow-sm shadow-black/10',
       secondary:
         'border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-ink)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-surface-hover)] active:scale-[0.98]',
       accent:
-        'bg-[#6d5dfc] text-white hover:bg-[#5b4ce0] active:scale-[0.98] shadow-sm shadow-[#6d5dfc]/20',
+        'bg-[var(--color-accent)] text-[var(--color-accent-text)] hover:bg-[var(--color-accent-hover)] active:scale-[0.98] shadow-sm shadow-[var(--color-accent)]/20',
       ghost:
         'text-[var(--color-ink-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-ink)] active:scale-[0.98]',
       danger:
@@ -45,7 +45,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         disabled={disabled || loading}
-        className={`inline-flex items-center justify-center font-semibold transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6d5dfc] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 select-none ${sizeClasses} ${variantClasses} ${className}`}
+        className={`inline-flex items-center justify-center font-semibold transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 select-none ${sizeClasses} ${variantClasses} ${className}`}
         {...props}
       >
         {loading ? (

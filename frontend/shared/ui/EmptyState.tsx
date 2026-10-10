@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertCircle, FolderOpen, RefreshCcw } from 'lucide-react';
 import { Button } from './Button';
+import { useLanguage } from '../i18n';
 
 export interface EmptyStateProps {
   icon?: React.ReactNode;
@@ -45,26 +46,36 @@ export function EmptyState({
 export interface ErrorStateProps {
   title?: string;
   message?: string;
+  retryLabel?: string;
+  backLabel?: string;
   onRetry?: () => void;
   onBack?: () => void;
   className?: string;
 }
 
 export function ErrorState({
-  title = '加载出现异常',
-  message = '服务通信失败，请检查网络或重试。',
+  title,
+  message,
+  retryLabel,
+  backLabel,
   onRetry,
   onBack,
   className = '',
 }: ErrorStateProps) {
+  const { t } = useLanguage();
+  const resolvedTitle = title ?? t.common.errorTitle;
+  const resolvedMessage = message ?? t.common.errorDesc;
+  const resolvedRetry = retryLabel ?? t.common.errorRetry;
+  const resolvedBack = backLabel ?? t.common.errorBack;
+
   return (
     <div className={`flex flex-col items-center justify-center p-8 text-center rounded-2xl border border-[var(--color-danger)]/20 bg-[var(--color-danger-light)]/40 ${className}`}>
       <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--color-danger-light)] text-[var(--color-danger)] shadow-sm">
         <AlertCircle className="h-6 w-6" />
       </div>
-      <h3 className="text-sm font-bold text-[var(--color-danger-text)]">{title}</h3>
+      <h3 className="text-sm font-bold text-[var(--color-danger-text)]">{resolvedTitle}</h3>
       <p className="mt-1 max-w-md text-xs text-[var(--color-danger-text)]/80 leading-relaxed font-mono">
-        {message}
+        {resolvedMessage}
       </p>
       <div className="mt-4 flex items-center gap-2">
         {onRetry && (
@@ -74,12 +85,12 @@ export function ErrorState({
             onClick={onRetry}
             icon={<RefreshCcw className="h-3.5 w-3.5" />}
           >
-            重新尝试
+            {resolvedRetry}
           </Button>
         )}
         {onBack && (
           <Button variant="ghost" size="sm" onClick={onBack}>
-            返回上一步
+            {resolvedBack}
           </Button>
         )}
       </div>

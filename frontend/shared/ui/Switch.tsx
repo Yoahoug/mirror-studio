@@ -21,8 +21,8 @@ export function Switch({ checked, onChange, disabled = false, label, id }: Switc
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6d5dfc] focus-visible:ring-offset-2 ${
-          checked ? 'bg-[#6d5dfc]' : 'bg-[var(--color-border)]'
+        className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 ${
+          checked ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]'
         }`}
       >
         <motion.span

@@ -46,7 +46,7 @@ export function SegmentedControl<T extends string = string>({
             role="radio"
             aria-checked={isSelected}
             onClick={() => onChange(option.value)}
-            className={`relative flex items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors duration-150 z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6d5dfc] ${itemHeightClass} ${
+            className={`relative flex items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors duration-150 z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] ${itemHeightClass} ${
               isSelected
                 ? 'text-[var(--color-ink)]'
                 : 'text-[var(--color-muted)] hover:text-[var(--color-ink)]'

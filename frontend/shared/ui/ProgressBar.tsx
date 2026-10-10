@@ -30,7 +30,7 @@ export function ProgressBar({ value, className = '', showLabel = false }: Progre
     <div className={`w-full ${className}`}>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-surface-hover)] border border-[var(--color-border-subtle)]">
         <motion.div
-          className="h-full rounded-full bg-[#6d5dfc]"
+          className="h-full rounded-full bg-[var(--color-accent)]"
           initial={{ width: 0 }}
           animate={{ width: `${clamped}%` }}
           transition={{ type: 'spring', stiffness: 200, damping: 25 }}

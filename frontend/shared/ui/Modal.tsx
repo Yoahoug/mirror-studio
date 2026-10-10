@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';
 import { IconButton } from './IconButton';
+import { useLanguage } from '../i18n';
 
 export interface ModalProps {
   open: boolean;
@@ -24,6 +25,7 @@ export function Modal({
 }: ModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const { t } = useLanguage();
 
   const maxWidthClass = {
     sm: 'max-w-sm',
@@ -130,7 +132,7 @@ export function Modal({
                 </div>
                 {showCloseButton && (
                   <IconButton
-                    aria-label="关闭弹窗"
+                    aria-label={t.common.close}
                     onClick={onClose}
                     size="sm"
                     className="text-[var(--color-muted)] hover:text-[var(--color-ink)]"

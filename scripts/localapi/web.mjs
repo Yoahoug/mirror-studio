@@ -88,6 +88,9 @@ export async function createLocalWebServer(httpServer) {
     plugins: [react(), tailwindcss(), localWebPlugin()],
     resolve: {
       alias: {
+        // 与 frontend/shared/vite.config.base.ts 的 createSpaConfig 保持同源：
+        // 两端 dev 与 build 用同一套 @shared 别名，避免“构建能过、本地白屏”。
+        '@shared': path.join(FRONTEND_DIR, 'shared'),
         // 仅重定向裸说明符 `tailwindcss`（CSS @import 使用），不匹配子路径。
         tailwindcss: resolveTailwindCssEntry(),
       },
