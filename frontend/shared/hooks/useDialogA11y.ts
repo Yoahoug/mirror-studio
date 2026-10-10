@@ -10,6 +10,13 @@ import { useEffect, useRef } from 'react';
 export function useDialogA11y({ open, onClose }: { open: boolean; onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  // Esc 用「最新」回调，但它不能进依赖数组：调用方普遍传内联箭头函数，父组件每次
+  // 重渲染都会换引用，effect 重跑会把焦点抢回弹窗（用户正在弹窗里输入时尤其明显）。
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -21,7 +28,7 @@ export function useDialogA11y({ open, onClose }: { open: boolean; onClose: () =>
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key === 'Tab' && dialogRef.current) {
@@ -50,7 +57,7 @@ export function useDialogA11y({ open, onClose }: { open: boolean; onClose: () =>
       clearTimeout(timer);
       previouslyFocusedRef.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return { dialogRef };
 }

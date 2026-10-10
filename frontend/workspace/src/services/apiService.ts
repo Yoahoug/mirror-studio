@@ -1,9 +1,9 @@
 /**
- * API Service Layer – connects ArtMirror React frontend to Django backend.
- * All requests go through the Django server (same origin).
+ * API Service Layer – workspace 自己的请求层（同源调用 Go 服务 / 本地模式 API）。
  *
  * Backend response format: { code: 0, message: "ok", data: ... }
  */
+import { notifyAuthRequired } from "@shared/services/client";
 
 // ── Types ──
 
@@ -174,6 +174,15 @@ export class AuthRequiredError extends Error {
   }
 }
 
+/**
+ * 会话失效的唯一出口：先通知 App 层的全局兜底（弹登录框），组件各自处理时
+ * openAuth 幂等；否则「组件忘了处理」就等于静默失败（历史记录页就是这样）。
+ */
+function raiseAuthRequired(message?: string): never {
+  notifyAuthRequired();
+  throw new AuthRequiredError(message);
+}
+
 class CsrfRequiredError extends Error {
   constructor(message = "CSRF 验证失败，请刷新后重试") {
     super(message);
@@ -228,7 +237,7 @@ async function apiRequest<T>(
   const redirectedPath = redirectedUrl?.pathname || "";
   const redirectedAuth = redirectedUrl?.searchParams.get("auth") || "";
   if (res.status === 401 || redirectedPath === "/workspace" || redirectedAuth === "login") {
-    throw new AuthRequiredError();
+    raiseAuthRequired();
   }
 
   const contentType = res.headers.get("content-type") || "";
@@ -666,7 +675,7 @@ async function parseApiResponse<T>(res: Response, csrfRetry: () => Promise<T>): 
   const redirectedPath = redirectedUrl?.pathname || "";
   const redirectedAuth = redirectedUrl?.searchParams.get("auth") || "";
   if (res.status === 401 || redirectedPath === "/workspace" || redirectedAuth === "login") {
-    throw new AuthRequiredError();
+    raiseAuthRequired();
   }
 
   const contentType = res.headers.get("content-type") || "";
@@ -681,7 +690,7 @@ async function parseApiResponse<T>(res: Response, csrfRetry: () => Promise<T>): 
   const body: ApiResponse<T> = await res.json().catch(() => ({ code: -1, message: "Invalid response", data: null as any }));
   if (!res.ok || body.code !== 0) {
     if (res.status === 401 || body.code === 401001) {
-      throw new AuthRequiredError(body.message || "请先登录或注册");
+      raiseAuthRequired(body.message || "请先登录或注册");
     }
     throw new Error(body.message || `Request failed: ${res.status}`);
   }
@@ -1443,7 +1452,7 @@ export async function uploadNovelBook(file: File): Promise<NovelBook> {
   const redirectedPath = redirectedUrl?.pathname || "";
   const redirectedAuth = redirectedUrl?.searchParams.get("auth") || "";
   if (res.status === 401 || redirectedPath === "/workspace" || redirectedAuth === "login") {
-    throw new AuthRequiredError();
+    raiseAuthRequired();
   }
 
   const contentType = res.headers.get("content-type") || "";

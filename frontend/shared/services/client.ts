@@ -34,6 +34,16 @@ export function setOnAuthRequired(listener: (() => void) | null) {
   authRequiredListener = listener;
 }
 
+/**
+ * 会话失效的统一通知口。共享 client 在 401 时自己会调；各 SPA 自带的请求层
+ * （workspace 的 src/services/apiService.ts）判定 401 后也要调一次，
+ * 否则 App 注册的全局兜底（弹登录框）永远不会触发。
+ */
+export function notifyAuthRequired() {
+  if (!authRequiredListener) return;
+  if (appConfig.isOnline) authRequiredListener();
+}
+
 export function getCsrfToken(): string {
   if (typeof document === 'undefined') return '';
   const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);

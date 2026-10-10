@@ -26,6 +26,13 @@ export function Modal({
   const modalRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const { t } = useLanguage();
+  // Esc 用「最新」回调，但不进依赖数组：否则调用方的内联 onClose 会让 effect 在每次
+  // 父组件重渲染时重跑，把焦点从用户正在输入的控件抢回弹窗容器。
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   const maxWidthClass = {
     sm: 'max-w-sm',
@@ -49,7 +56,7 @@ export function Modal({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
 
@@ -85,7 +92,7 @@ export function Modal({
       clearTimeout(timer);
       previouslyFocusedRef.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return (
     <AnimatePresence>

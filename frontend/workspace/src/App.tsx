@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Suspense, lazy, useRef } from "react";
+import React, { useState, useEffect, useCallback, Suspense, lazy, useRef } from "react";
 import { AnimatePresence } from "motion/react";
 import TopToolbar from "./components/TopToolbar";
 import Sidebar from "./components/Sidebar";
@@ -8,13 +8,13 @@ import NovelVisualizationSpace from "./components/NovelVisualizationSpace";
 import ReleaseNotesModal, { type ReleaseInfo } from "./components/ReleaseNotesModal";
 import SettingsModal, { type SettingsTabId } from "./components/SettingsModal";
 import AuthModal from "./components/AuthModal";
-import { fetchAccountSummary, fetchChatModels, type AccountSummaryResponse, type ChatModel, type UserInfo } from "./services/apiService";
+import { fetchAccountSummary, fetchChatModels, AuthRequiredError, type AccountSummaryResponse, type ChatModel, type UserInfo } from "./services/apiService";
 import { ToastContainer, ToastType } from "./components/Toast";
 import { translations } from "./i18n";
 import { useLanguage } from "@shared/i18n";
 import { appConfig } from "@shared/config/app-mode";
 import { setOnAuthRequired } from "@shared/services/client";
-import { Skeleton } from "@shared/ui";
+import { Skeleton, ErrorBoundary } from "@shared/ui";
 import type { AssistantScene, AssistantWorkbenchState } from "@shared/types/assistant";
 
 const ChatWidget = lazy(() => import("./components/ChatWidget"));
@@ -255,10 +255,14 @@ export default function App() {
     if (isAuthenticated) {
       fetchAccountSummary()
         .then(applyAccountSummary)
-        .catch(() => {
-          setIsAuthenticated(false);
-          setAccountSummary(null);
-          setUserInfo(null);
+        .catch((error) => {
+          // 只有明确的会话失效（401 / 被重定向到登录）才算未登录：网络抖动、
+          // 5xx、代理重启都不能把已经登录的用户踢下线（首屏登录态来自模板注入）。
+          if (error instanceof AuthRequiredError) {
+            setIsAuthenticated(false);
+            setAccountSummary(null);
+            setUserInfo(null);
+          }
         });
     } else {
       setAccountSummary(null);
@@ -283,14 +287,18 @@ export default function App() {
       });
   }, [isAuthenticated]);
 
+  // 计数器而不是时间戳：同一毫秒内连发两条提示（例如批量生成 + 完成通知）不会撞 id。
+  const toastSeqRef = useRef(0);
   const addToast = (message: string, type: ToastType = "success") => {
-    const id = Date.now().toString();
+    toastSeqRef.current += 1;
+    const id = `toast-${toastSeqRef.current}`;
     setToasts(prev => [...prev, { id, message, type }]);
   };
 
-  const removeToast = (id: string) => {
+  // 稳定引用：Toast 的自动消失定时器依赖 onClose，每次渲染换新函数会让 3 秒计时不断重置。
+  const removeToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
-  };
+  }, []);
 
   const openAuth = (mode: "login" | "register" = "login") => {
     setAuthMode(mode);
@@ -445,7 +453,9 @@ export default function App() {
         <div
           className="flex-1 overflow-x-hidden overflow-y-auto scroll-smooth transition-colors duration-300"
         >
-          <AnimatePresence initial={false} mode="wait">
+          {/* 板块级别兜底：某个工作台渲染抛错时保住侧栏/顶栏，切板块即复位（与 console 同构）。 */}
+          <ErrorBoundary key={activeTab}>
+            <AnimatePresence initial={false} mode="wait">
             {activeTab === 'history' ? (
               <HistorySpace
                 key="history"
@@ -513,6 +523,7 @@ export default function App() {
               />
             )}
           </AnimatePresence>
+          </ErrorBoundary>
         </div>
       </main>
 
