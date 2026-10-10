@@ -1,51 +1,14 @@
+/**
+ * 共享鉴权服务：只保留两个 SPA 共用的登出。
+ *
+ * 这里曾经还有 login / register / fetchCaptcha / fetchAccountSummary 的副本：
+ * 它们与 workspace/src/services/apiService.ts 重复、返回结构还不一样，其中
+ * fetchAccountSummary 打的是不存在的 /api/auth/summary（真接口是
+ * /api/account/summary）。这些副本无人引用，已随本次清理删除；要加接口就加到
+ * 各自的 apiService，不要再在这里造第二份契约。
+ */
 import { appConfig } from '../config/app-mode';
 import { apiRequest } from './client';
-
-export interface AccountSummary {
-  user_id: number;
-  username: string;
-  email: string;
-  email_verified: boolean;
-  available_quota: number;
-  daily_quota: number;
-  frozen_quota: number;
-  is_staff: boolean;
-}
-
-export interface CaptchaData {
-  captcha_code: string;
-  captcha_svg: string;
-}
-
-export async function fetchAccountSummary(): Promise<AccountSummary> {
-  return apiRequest<AccountSummary>('/api/auth/summary');
-}
-
-export async function fetchCaptcha(): Promise<CaptchaData> {
-  return apiRequest<CaptchaData>('/api/auth/captcha');
-}
-
-export async function login(payload: { username: string; password: string; captcha_code?: string }): Promise<void> {
-  await apiRequest('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function register(payload: {
-  username: string;
-  password: string;
-  password_confirm?: string;
-  email?: string;
-  captcha_code?: string;
-}): Promise<void> {
-  await apiRequest('/api/auth/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-}
 
 export async function logout(): Promise<{ logged_out: boolean }> {
   const app = typeof window === 'undefined' ? '' : window.location.pathname;
