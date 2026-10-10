@@ -8,7 +8,7 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 ENV npm_config_registry=${NPM_REGISTRY}
 WORKDIR /app
 COPY package.json package-lock.json ./
-COPY frontend/shared/vite.config.base.ts ./frontend/shared/
+COPY frontend/shared/ ./frontend/shared/
 COPY frontend/workspace/ ./frontend/workspace/
 COPY frontend/console/ ./frontend/console/
 COPY frontend/tsconfig.json ./frontend/

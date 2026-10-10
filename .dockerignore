@@ -44,3 +44,6 @@ static/css
 # 测试与差分资产不进镜像
 **/*_test.go
 testdata/
+# 本地工具产物（不入镜像上下文）
+.zcodeignore
+.zcode/
