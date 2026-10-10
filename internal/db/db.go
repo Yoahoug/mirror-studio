@@ -130,13 +130,26 @@ func (d *DB) WithImmediate(ctx context.Context, fn func(tx *Tx) error) error {
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return err
 	}
+	// ROLLBACK and COMMIT run with a context that ignores cancellation: the
+	// caller's context is often already canceled (client disconnect, worker
+	// shutdown) by the time the transaction ends, and a connection handed back
+	// to the pool with the transaction still open poisons every later write.
+	// The deferred rollback also covers a panic inside fn.
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		}
+	}()
 	tx := &Tx{conn: conn, ctx: ctx}
 	if err := fn(tx); err != nil {
-		_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		return err
 	}
-	_, err = conn.ExecContext(ctx, "COMMIT")
-	return err
+	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "COMMIT"); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // Tx is a thin wrapper that keeps the context attached to every statement.
