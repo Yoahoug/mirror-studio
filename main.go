@@ -177,6 +177,11 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	generatorService.StartWorker(ctx)
+	if requeued, err := novelService.RequeueInterruptedTasks(ctx); err != nil {
+		logger.Warn("小说可视化任务重启恢复失败", "error", err)
+	} else if requeued > 0 {
+		logger.Info("小说可视化任务重启后重新排队", "count", requeued)
+	}
 	novelService.StartWorker(ctx)
 	go runMaintenanceLoop(ctx, logger, handle, site, mediaService)
 

@@ -531,3 +531,31 @@ func (s *Service) requeueStalledTask(ctx context.Context, taskID int64, now time
 		WHERE id = ?`, StatusQueued, db.FormatTime(now), taskID)
 	return err
 }
+
+// RequeueInterruptedTasks returns tasks left running by a previous process to
+// the queue. A deploy stops the worker by canceling its context, so the
+// terminal write of every in-flight task fails and the row keeps its running
+// status; the periodic stall rescue only covers tasks that never emitted an
+// event, and retry only accepts failed or canceled rows, so nothing else would
+// ever pick such a task up again. The scene plan, logs and progress survive,
+// which makes the worker resume image generation instead of redoing the
+// analysis. It runs once at startup, when nothing in this process owns a row.
+func (s *Service) RequeueInterruptedTasks(ctx context.Context) (int64, error) {
+	now := s.now()
+	var requeued int64
+	err := s.db.WithImmediate(ctx, func(tx *db.Tx) error {
+		result, err := tx.Exec(`
+			UPDATE novelviz_novelvisualizationtask
+			SET status = ?, started_at = NULL, finished_at = NULL, error_message = '', updated_at = ?
+			WHERE status = ?`, StatusQueued, db.FormatTime(now), StatusRunning)
+		if err != nil {
+			return err
+		}
+		requeued, err = result.RowsAffected()
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return requeued, nil
+}
